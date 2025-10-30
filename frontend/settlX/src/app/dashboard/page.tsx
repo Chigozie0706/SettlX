@@ -2,7 +2,7 @@ import Dashboard from "@/components/Dashboard";
 
 export default function Page() {
   return (
-    <div>
+    <div className="mt-6">
       <Dashboard />
     </div>
   );
