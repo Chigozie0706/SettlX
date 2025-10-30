@@ -1,7 +1,101 @@
-import Image from "next/image";
-import HeroSection from "@/components/HeroSection";
+"use client";
+
+import { useEffect, useState } from "react";
+import { useAccount, useReadContract, useWriteContract } from "wagmi";
+import { http, parseUnits } from "viem";
+import contractABI from "../contracts/settlX.json";
+import { readContract } from "wagmi/actions";
+import { arbitrumSepolia } from "viem/chains";
+import { createConfig } from "@privy-io/wagmi";
 
 export default function Dashboard() {
+  const { address } = useAccount();
+  const [payments, setPayments] = useState<any[]>([]);
+  const CONTRACT_ADDRESS = "0x4b1af11B7e8Ec44634A47c8b420b445cE5d6c578";
+
+  const { data: paymentIds } = useReadContract({
+    address: CONTRACT_ADDRESS,
+    abi: contractABI.abi,
+    functionName: "getMerchantPaymentIds",
+    args: [address],
+  });
+
+  const { data } = useReadContract({
+    address: CONTRACT_ADDRESS,
+    abi: contractABI.abi,
+  });
+
+  const config = createConfig({
+    chains: [arbitrumSepolia],
+    transports: {
+      [arbitrumSepolia.id]: http("https://sepolia-rollup.arbitrum.io/rpc"),
+    },
+    ssr: true,
+  });
+
+  useEffect(() => {
+    const fetchPayments = async () => {
+      if (!paymentIds || !Array.isArray(paymentIds) || paymentIds.length === 0)
+        return;
+
+      const results = await Promise.all(
+        paymentIds.map(async (id: bigint) => {
+          try {
+            const result: any = await readContract(config, {
+              address: CONTRACT_ADDRESS,
+              abi: contractABI.abi,
+              functionName: "getPayment",
+              args: [id],
+            });
+
+            // Destructure the result
+            const [pid, payer, merchant, amount, timestamp, rfce, status] =
+              result;
+
+            // Convert raw BigInt and numeric fields to readable data
+            return {
+              id: pid.toString(),
+              payer,
+              merchant,
+              amount: Number(amount) / 1e6, // since USDC has 6 decimals
+              timestamp: new Date(Number(timestamp) * 1000).toLocaleString(),
+              rfce,
+              status: ["Pending", "Accepted", "Rejected"][Number(status)],
+            };
+          } catch (err) {
+            console.error("Error fetching payment:", err);
+            return null;
+          }
+        })
+      );
+
+      setPayments(results.filter(Boolean)); // Filter out nulls
+    };
+
+    fetchPayments();
+  }, [paymentIds]);
+
+  const { writeContract: writeAccept } = useWriteContract();
+  const { writeContract: writeReject } = useWriteContract();
+
+  const acceptPayment = async (id: string) => {
+    await writeAccept({
+      address: CONTRACT_ADDRESS,
+      abi: contractABI.abi,
+      functionName: "acceptPayment",
+      args: [BigInt(id)],
+    });
+  };
+
+  const rejectPayment = async (id: string) => {
+    await writeReject({
+      address: CONTRACT_ADDRESS,
+      abi: contractABI.abi,
+      functionName: "rejectPayment",
+      args: [BigInt(id)],
+    });
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 p-8">
       <div className=" mx-auto bg-white shadow-lg rounded-xl p-8">
@@ -38,21 +132,64 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                <tr className="border-b">
-                  <td className="p-3">
-                    <div className="font-medium">Website Design</div>
-                    <div className="text-gray-500 text-xs">
-                      Designed 10 page website.
-                    </div>
-                  </td>
-                  <td className="text-right p-3">10</td>
-                  <td className="text-right p-3">1,000.00 USDT</td>
-                  <td className="text-right p-3">6%</td>
+                {payments.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="text-center p-4 text-gray-500">
+                      No pending transactions
+                    </td>
+                  </tr>
+                ) : (
+                  payments.map((payment) => (
+                    <tr key={payment.id} className="border-b">
+                      <td className="p-3">
+                        <div className="font-medium">Payment #{payment.id}</div>
+                        <div className="text-gray-500 text-xs">
+                          From: {payment.payer?.slice(0, 8)}...
+                          {payment.payer?.slice(-6)}
+                        </div>
+                      </td>
+                      <td className="text-right p-3">{payment.rfce}</td>
+                      <td className="text-right p-3">
+                        {payment.amount.toFixed(2)} USDC
+                      </td>
+                      <td className="text-right p-3">{payment.timestamp}</td>
+                      <td className="text-right p-3">
+                        <span
+                          className={`px-2 py-1 rounded-full text-xs ${
+                            payment.status === "Pending"
+                              ? "bg-yellow-100 text-yellow-800"
+                              : payment.status === "Accepted"
+                              ? "bg-green-100 text-green-800"
+                              : "bg-red-100 text-red-800"
+                          }`}
+                        >
+                          {payment.status}
+                        </span>
+                      </td>
+                      <td className="text-right p-3">
+                        {payment.status === "Pending" ? (
+                          <div className="flex gap-2 justify-end">
+                            <button
+                              onClick={() => acceptPayment(payment.id)}
+                              className="bg-green-600 text-white px-3 py-1 rounded text-xs hover:bg-green-700"
+                            >
+                              Accept
+                            </button>
+                            <button
+                              onClick={() => rejectPayment(payment.id)}
+                              className="bg-red-600 text-white px-3 py-1 rounded text-xs hover:bg-red-700"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-gray-400">Completed</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
 
-                  <td className="text-right p-3 text-gray-400 cursor-pointer">
-                    Accept Lock Amount
-                  </td>
-                </tr>
                 <tr className="border-b">
                   <td className="p-3">
                     <div className="font-medium">Logo Design</div>

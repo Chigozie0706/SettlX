@@ -18,8 +18,7 @@ export default function HeroSection() {
         </button>
 
         <p className="text-sm text-gray-400 mt-3">
-          Supported wallets:{" "}
-          <span className="text-white">Metamask | WalletConnect</span>
+          Supported By: <span className="text-white">Privy</span>
         </p>
       </main>
 
