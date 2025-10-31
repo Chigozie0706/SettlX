@@ -13,14 +13,20 @@ export default function Dashboard() {
   const { address } = useAccount();
   const [payments, setPayments] = useState<any[]>([]);
   const [exchangeRate, setExchangeRate] = useState<number>(1500); // Default rate, you can fetch from API
-  const CONTRACT_ADDRESS = "0x4b1af11B7e8Ec44634A47c8b420b445cE5d6c578";
+  const CONTRACT_ADDRESS = "0x4DD6C61b13B5DF1DDFBE1c4BEfAF82FB785E2917";
 
   const [accountNumber, setAccountNumber] = useState("");
   const [bankCode, setBankCode] = useState("");
   const [accountName, setAccountName] = useState("");
+  const [bankName, setBankName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [rateLoading, setRateLoading] = useState(true);
+  const [merchantInfo, setMerchantInfo] = useState<any>(null);
+
+  const { writeContract: writeAccept } = useWriteContract();
+  const { writeContract: writeReject } = useWriteContract();
+  const { writeContract: writeRegister } = useWriteContract();
 
   const { data: paymentIds } = useReadContract({
     address: CONTRACT_ADDRESS,
@@ -55,34 +61,65 @@ export default function Dashboard() {
   // Extract price data from the tuple
   const usdcPrice = roundData ? Number(roundData[1]) / 10 ** 8 : null;
 
-  // Fetch exchange rate from USDC price
-  // useEffect(() => {
-  //   if (usdcPrice) {
-  //     // Convert USDC price to NGN (assuming 1 USD = 1500 NGN as base)
-  //     // You might want to fetch actual USD/NGN rate from another API
-  //     const ngnRate = usdcPrice * 1500; // Adjust this multiplier based on actual USD/NGN rate
-  //     setExchangeRate(ngnRate);
-  //   }
-  // }, [usdcPrice]);
+  // Register merchant bank details on blockchain
+  const registerBankDetails = async () => {
+    if (!bankName || !accountName || !accountNumber) {
+      setError("Please fill in all fields");
+      return;
+    }
 
-  // Fetch exchange rate (you can replace this with actual API call)
-  // useEffect(() => {
-  //   const fetchExchangeRate = async () => {
-  //     try {
-  //       // Example: Fetch from Binance API or other crypto price API
-  //       // const response = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=USDCUSDT');
-  //       // const data = await response.json();
-  //       // Then convert USDT to NGN using another API
-  //       setExchangeRate(1520); // Current approximate rate
-  //     } catch (error) {
-  //       console.error("Error fetching exchange rate:", error);
-  //     }
-  //   };
+    setLoading(true);
+    setError("");
 
-  //   fetchExchangeRate();
-  // }, []);
+    try {
+      await writeRegister({
+        address: CONTRACT_ADDRESS,
+        abi: contractABI.abi,
+        functionName: "registerMerchantBankDetails",
+        args: [bankName, accountName, accountNumber],
+      });
+      console.log("Bank details registered successfully");
+      // Refresh merchant info after registration
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
+    } catch (err) {
+      setError("Failed to register bank details");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // Fetch NGN/USD exchange rate
+  // Fetch merchant info on component load
+  useEffect(() => {
+    const fetchMerchantInfo = async () => {
+      if (!address) return;
+
+      try {
+        const result: any = await readContract(config, {
+          address: CONTRACT_ADDRESS,
+          abi: contractABI.abi,
+          functionName: "getMerchantBankDetails",
+          args: [address],
+        });
+
+        if (result && result[0]) {
+          // Check if bank name exists
+          setMerchantInfo({
+            bankName: result[0],
+            accountName: result[1],
+            accountNumber: result[2],
+          });
+        }
+      } catch (err) {
+        console.error("Error fetching merchant info:", err);
+      }
+    };
+
+    fetchMerchantInfo();
+  }, [address]);
+
   useEffect(() => {
     const fetchNgnUsdRate = async () => {
       try {
@@ -170,6 +207,10 @@ export default function Dashboard() {
               merchant,
               amount: usdcAmount,
               ngnAmount: ngnAmount,
+              // ngnAmount: ngnAmount.toLocaleString(undefined, {
+              //   minimumFractionDigits: 2,
+              //   maximumFractionDigits: 2,
+              // }),
               timestamp: new Date(Number(timestamp) * 1000).toLocaleString(),
               rfce,
               status: ["Pending", "Accepted", "Rejected"][Number(status)],
@@ -187,16 +228,56 @@ export default function Dashboard() {
     fetchPayments();
   }, [paymentIds, exchangeRate]);
 
-  const { writeContract: writeAccept } = useWriteContract();
-  const { writeContract: writeReject } = useWriteContract();
+  // const acceptPayment = async (id: string) => {
+  //   await writeAccept({
+  //     address: CONTRACT_ADDRESS,
+  //     abi: contractABI.abi,
+  //     functionName: "acceptPayment",
+  //     args: [BigInt(id)],
+  //   });
+  // };
 
-  const acceptPayment = async (id: string) => {
-    await writeAccept({
-      address: CONTRACT_ADDRESS,
-      abi: contractABI.abi,
-      functionName: "acceptPayment",
-      args: [BigInt(id)],
-    });
+  // Accept payment and lock rate in one transaction
+
+  const acceptPaymentWithRate = async (
+    paymentId: string,
+    ngnAmount: number
+  ) => {
+    // setAcceptingPayment(paymentId);
+    try {
+      // Convert rate to wei (multiply by 10^18 for precision)
+      // const rateInWei = BigInt(Math.floor(rate * 10**18));
+      const ngnAmountInWei = BigInt(Math.floor(ngnAmount * 10 ** 18));
+
+      await writeAccept({
+        address: CONTRACT_ADDRESS,
+        abi: contractABI.abi,
+        functionName: "acceptPaymentWithRate",
+        args: [BigInt(paymentId), ngnAmountInWei],
+      });
+
+      // Update local state immediately for better UX
+      // setPayments((prev) =>
+      //   prev.map((p) =>
+      //     p.id === paymentId
+      //       ? {
+      //           ...p,
+      //           status: "Accepted",
+      //           lockedRate: rate,
+      //           rateLockTimestamp: new Date().toLocaleString(),
+      //           effectiveRate: rate,
+      //         }
+      //       : p
+      //   )
+      // );
+
+      console.log("Payment accepted with rate locked successfully");
+    } catch (err) {
+      setError("Failed to accept payment and lock rate");
+      console.error(err);
+    } finally {
+      // setAcceptingPayment(null);
+    }
   };
 
   const rejectPayment = async (id: string) => {
@@ -248,10 +329,11 @@ export default function Dashboard() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8">
           <div>
-            <h2 className="text-2xl font-bold text-gray-900">Hello Chigozie</h2>
-            <p className="text-gray-600 mt-1">
-              Welcome to your merchant dashboard
-            </p>
+            <h2 className="text-2xl font-bold text-gray-900">
+              {" "}
+              Welcome to Your Merchant Dashboard{" "}
+            </h2>
+            <p className="text-gray-600 mt-1">Hello</p>
           </div>
           <div className="mt-4 sm:mt-0 bg-blue-50 px-4 py-2 rounded-lg">
             <p className="text-sm text-blue-700">
@@ -263,111 +345,163 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Column - Bank Details */}
           <div className="lg:col-span-1">
+            {/* Current Bank Details */}
             <section className="mb-8">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">
                 Bank Details
               </h3>
-              <div className="border border-gray-200 rounded-lg p-6 bg-gray-50">
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">
-                      Account Name
-                    </label>
-                    <p className="text-gray-900">Chigozie Christopher</p>
+              {merchantInfo ? (
+                <div className="border border-green-200 rounded-lg p-6 bg-green-50">
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-sm font-medium text-gray-600">
+                        Account Name
+                      </label>
+                      <p className="text-gray-900">
+                        {merchantInfo.accountName}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-gray-600">
+                        Account Number
+                      </label>
+                      <p className="text-gray-900">
+                        {merchantInfo.accountNumber}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-gray-600">
+                        Bank Name
+                      </label>
+                      <p className="text-gray-900">{merchantInfo.bankName}</p>
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">
-                      Account Number
-                    </label>
-                    <p className="text-gray-900">0156561995</p>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium text-gray-600">
-                      Bank Name
-                    </label>
-                    <p className="text-gray-900">Guaranty Trust Bank</p>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <div className="p-6 max-w-md mx-auto bg-white rounded-xl shadow-md">
-              <h2 className="text-2xl font-bold mb-4">Verify Bank Account</h2>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">
-                    Bank {usdcPrice}
-                  </label>
-                  <select
-                    value={bankCode}
-                    onChange={(e) => setBankCode(e.target.value)}
-                    className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    <option value="">Select Bank</option>
-                    <option value="044">Access Bank</option>
-                    <option value="058">GTBank</option>
-                    <option value="030">Heritage Bank</option>
-                    <option value="032">First Bank</option>
-                    <option value="033">United Bank for Africa</option>
-                    <option value="035">Wema Bank</option>
-                    <option value="050">Ecobank Nigeria</option>
-                    <option value="070">Fidelity Bank</option>
-                    <option value="011">First Bank of Nigeria</option>
-                    <option value="214">First City Monument Bank</option>
-                    <option value="301">Jaiz Bank</option>
-                    <option value="082">Keystone Bank</option>
-                    <option value="076">Polaris Bank</option>
-                    <option value="101">Providus Bank</option>
-                    <option value="221">Stanbic IBTC Bank</option>
-                    <option value="068">Standard Chartered Bank</option>
-                    <option value="232">Sterling Bank</option>
-                    <option value="100">Suntrust Bank</option>
-                    <option value="032">Union Bank of Nigeria</option>
-                    <option value="215">Unity Bank</option>
-                    <option value="035">VFD Microfinance Bank</option>
-                    <option value="035">Wema Bank</option>
-                    <option value="035">Zenith Bank</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700">
-                    Account Number
-                  </label>
-                  <input
-                    type="text"
-                    value={accountNumber}
-                    onChange={(e) =>
-                      setAccountNumber(e.target.value.replace(/\D/g, ""))
-                    }
-                    placeholder="Enter account number"
-                    className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                    maxLength={10}
-                  />
-                </div>
-
-                <button
-                  onClick={verifyAccount}
-                  disabled={loading}
-                  className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50"
-                >
-                  {loading ? "Verifying..." : "Verify Account"}
-                </button>
-
-                {error && (
-                  <div className="text-red-600 text-sm mt-2">{error}</div>
-                )}
-
-                {accountName && (
-                  <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-md">
-                    <p className="text-sm text-green-800">
-                      <strong>Account Name:</strong> {accountName}
+                  <div className="mt-4 p-3 bg-green-100 rounded">
+                    <p className="text-sm text-green-700">
+                      ✅ Bank details registered on blockchain
                     </p>
                   </div>
-                )}
+                </div>
+              ) : (
+                <div className="border border-yellow-200 rounded-lg p-6 bg-yellow-50">
+                  <p className="text-yellow-700 text-sm">
+                    No bank details registered yet. Please register your bank
+                    details below.
+                  </p>
+                </div>
+              )}
+            </section>
+
+            {/* Register Bank Details Form */}
+            {!merchantInfo && (
+              <div className="p-6 bg-white rounded-xl shadow-md mb-8">
+                <h2 className="text-xl font-bold mb-4">
+                  Register Bank Details
+                </h2>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Bank
+                    </label>
+                    <select
+                      value={bankName}
+                      onChange={(e) => setBankName(e.target.value)}
+                      className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="">Select Bank</option>
+                      <option value="044">Access Bank</option>
+                      <option value="058">GTBank</option>
+                      <option value="030">Heritage Bank</option>
+                      <option value="032">First Bank</option>
+                      <option value="033">United Bank for Africa</option>
+                      <option value="035">Wema Bank</option>
+                      <option value="050">Ecobank Nigeria</option>
+                      <option value="070">Fidelity Bank</option>
+                      <option value="011">First Bank of Nigeria</option>
+                      <option value="214">First City Monument Bank</option>
+                      <option value="301">Jaiz Bank</option>
+                      <option value="082">Keystone Bank</option>
+                      <option value="076">Polaris Bank</option>
+                      <option value="101">Providus Bank</option>
+                      <option value="221">Stanbic IBTC Bank</option>
+                      <option value="068">Standard Chartered Bank</option>
+                      <option value="232">Sterling Bank</option>
+                      <option value="100">Suntrust Bank</option>
+                      <option value="032">Union Bank of Nigeria</option>
+                      <option value="215">Unity Bank</option>
+                      <option value="035">VFD Microfinance Bank</option>
+                      <option value="035">Wema Bank</option>
+                      <option value="035">Zenith Bank</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Account Number
+                    </label>
+                    <input
+                      type="text"
+                      value={accountNumber}
+                      onChange={(e) =>
+                        setAccountNumber(e.target.value.replace(/\D/g, ""))
+                      }
+                      placeholder="Enter account number"
+                      className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                      // maxLength={10}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Account Name
+                    </label>
+                    <input
+                      type="text"
+                      value={accountName}
+                      onChange={(e) => setAccountName(e.target.value)}
+                      placeholder="Enter account name"
+                      className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                      // maxLength={10}
+                    />
+                  </div>
+
+                  {/* <button
+                    onClick={verifyAccount}
+                    disabled={loading || !accountNumber || !bankCode}
+                    className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50"
+                  >
+                    {loading ? "Verifying..." : "Verify Account"}
+                  </button> */}
+
+                  {error && (
+                    <div className="text-red-600 text-sm mt-2">{error}</div>
+                  )}
+
+                  {accountName && (
+                    <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-md">
+                      <p className="text-sm text-green-800">
+                        <strong>Verified Account Name:</strong> {accountName}{" "}
+                        {accountNumber} {bankName}
+                      </p>
+                      <p className="text-sm text-green-800 mt-1">
+                        <strong>Bank:</strong> {bankName}
+                      </p>
+
+                      <button
+                        onClick={registerBankDetails}
+                        disabled={loading}
+                        className="w-full mt-3 bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50"
+                      >
+                        {loading
+                          ? "Registering..."
+                          : "Register Bank Details on Blockchain"}
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Quick Stats */}
             <section>
@@ -474,11 +608,7 @@ export default function Dashboard() {
                           </td>
                           <td className="text-right p-4">
                             <div className="font-medium text-gray-900">
-                              ₦
-                              {payment.ngnAmount.toLocaleString(undefined, {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2,
-                              })}
+                              ₦{payment.ngnAmount}
                             </div>
                           </td>
                           <td className="text-right p-4">
@@ -498,10 +628,15 @@ export default function Dashboard() {
                             {payment.status === "Pending" ? (
                               <div className="flex gap-2 justify-end">
                                 <button
-                                  onClick={() => acceptPayment(payment.id)}
+                                  onClick={() =>
+                                    acceptPaymentWithRate(
+                                      payment.id,
+                                      payment.ngnAmount
+                                    )
+                                  }
                                   className="bg-green-600 text-white px-3 py-2 rounded text-sm hover:bg-green-700 transition-colors font-medium"
                                 >
-                                  Accept
+                                  Lock in Rate
                                 </button>
                                 <button
                                   onClick={() => rejectPayment(payment.id)}

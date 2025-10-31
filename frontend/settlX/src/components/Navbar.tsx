@@ -99,12 +99,12 @@ export default function Navbar() {
             Transact
           </Link>
           <Link
-            href="/pricing"
+            href="/admin"
             className={`hover:text-fuchsia-400 transition ${
-              pathname === "/pricing" ? "text-fuchsia-400" : ""
+              pathname === "/admin" ? "text-fuchsia-400" : ""
             }`}
           >
-            Pricing
+            Admin
           </Link>
         </div>
 

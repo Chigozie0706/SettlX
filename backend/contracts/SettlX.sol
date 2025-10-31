@@ -12,12 +12,13 @@ contract SettlX is ReentrancyGuard {
 
     IERC20 public immutable stableToken; // e.g. USDC
     uint256 private nextPaymentId = 1;
-    uint256[] private allPayments; // track all payment IDs for admin
+    address public admin;
 
     enum Status {
         Pending,
         Accepted,
-        Rejected
+        Rejected,
+        Paid
     }
 
     struct Payment {
@@ -28,6 +29,8 @@ contract SettlX is ReentrancyGuard {
         uint256 timestamp;
         string rfce;
         Status status;
+        uint256 lockedRate;
+        uint256 rateLockTimestamp;
     }
 
     struct MerchantInfo {
@@ -40,6 +43,7 @@ contract SettlX is ReentrancyGuard {
     mapping(uint256 => Payment) public payments;
     mapping(address => uint256[]) private merchantPayments;
     mapping(address => MerchantInfo) public merchants;
+    mapping(address => uint256[]) private payerPayments;
 
     event MerchantRegistered(
         address indexed merchant,
@@ -55,12 +59,19 @@ contract SettlX is ReentrancyGuard {
         uint256 amount,
         string rfce
     );
-    event PaymentAccepted(uint256 indexed id);
+    event PaymentAccepted(uint256 indexed id, uint256 lockedRate);
     event PaymentRejected(uint256 indexed id);
+    event PaymentMarkedAsPaid(uint256 indexed id);
 
     constructor(address tokenAddress) {
         require(tokenAddress != address(0), "Invalid token");
         stableToken = IERC20(tokenAddress);
+        admin = msg.sender;
+    }
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin can call this");
+        _;
     }
 
     /// @notice Payer must approve contract first
@@ -83,23 +94,33 @@ contract SettlX is ReentrancyGuard {
             amount: amount,
             timestamp: block.timestamp,
             rfce: rfce,
-            status: Status.Pending
+            status: Status.Pending,
+            lockedRate: 0,
+            rateLockTimestamp: 0
         });
         merchantPayments[merchant].push(id);
-
+        payerPayments[msg.sender].push(id);
         emit PaymentCreated(id, msg.sender, merchant, amount, rfce);
     }
 
-    /// @notice Merchant accepts a pending payment -> funds released
-    function acceptPayment(uint256 paymentId) external nonReentrant {
+    /// @notice Merchant accepts payment and locks exchange rate in one transaction
+    function acceptPaymentWithRate(
+        uint256 paymentId,
+        uint256 rate
+    ) external nonReentrant {
         Payment storage p = payments[paymentId];
         require(p.merchant == msg.sender, "Not your payment");
         require(p.status == Status.Pending, "Already processed");
+        require(rate > 0, "Invalid rate");
 
         p.status = Status.Accepted;
-        stableToken.safeTransfer(p.merchant, p.amount);
+        p.lockedRate = rate;
+        p.rateLockTimestamp = block.timestamp;
 
-        emit PaymentAccepted(paymentId);
+        // Transfer funds to admin
+        stableToken.safeTransfer(admin, p.amount);
+
+        emit PaymentAccepted(paymentId, rate);
     }
 
     /// @notice Merchant rejects payment -> refund to payer
@@ -174,11 +195,60 @@ contract SettlX is ReentrancyGuard {
         );
     }
 
-    function getPaymentInfo(
-        uint256 id
-    ) external view returns (Payment memory, MerchantInfo memory) {
-        Payment memory p = payments[id];
-        MerchantInfo memory m = merchants[p.merchant];
-        return (p, m);
+    /// @notice Admin can view a merchant's bank details
+    function getMerchantBankDetails(
+        address merchant
+    )
+        external
+        view
+        returns (
+            string memory bankName,
+            string memory accountName,
+            string memory accountNumber
+        )
+    {
+        MerchantInfo storage info = merchants[merchant];
+        return (info.bankName, info.accountName, info.accountNumber);
+    }
+
+    // function getPaymentInfo(
+    //     uint256 id
+    // ) external view returns (Payment memory, MerchantInfo memory) {
+    //     Payment memory p = payments[id];
+    //     MerchantInfo memory m = merchants[p.merchant];
+    //     return (p, m);
+    // }
+
+    function getAllPayments()
+        external
+        view
+        returns (Payment[] memory, MerchantInfo[] memory)
+    {
+        uint256 totalPayments = nextPaymentId - 1;
+        Payment[] memory allPayments = new Payment[](totalPayments);
+        MerchantInfo[] memory allMerchants = new MerchantInfo[](totalPayments);
+
+        for (uint256 i = 1; i <= totalPayments; i++) {
+            allPayments[i - 1] = payments[i];
+            allMerchants[i - 1] = merchants[payments[i].merchant];
+        }
+
+        return (allPayments, allMerchants);
+    }
+
+    /// @notice Get all payment IDs for a payer
+    function getPayerPaymentIds(
+        address payer
+    ) external view returns (uint256[] memory) {
+        return payerPayments[payer];
+    }
+
+    /// @notice Admin marks payment as paid (after processing bank transfer)
+    function markAsPaid(uint256 paymentId) external onlyAdmin nonReentrant {
+        Payment storage p = payments[paymentId];
+        require(p.status == Status.Accepted, "Payment must be accepted first");
+
+        p.status = Status.Paid;
+        emit PaymentMarkedAsPaid(paymentId);
     }
 }
