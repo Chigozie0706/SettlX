@@ -6,6 +6,23 @@ export async function GET(request) {
   const accountNumber = searchParams.get("account_number");
   const bankCode = searchParams.get("bank_code");
 
+  // Debug: Check if environment variable is loaded
+  console.log(
+    "Paystack Key exists:",
+    !!process.env.NEXT_PUBLIC_PAYSTACK_SECRET_KEY
+  );
+  console.log(
+    "Paystack Key length:",
+    process.env.NEXT_PUBLIC_PAYSTACK_SECRET_KEY?.length
+  );
+
+  if (!process.env.NEXT_PUBLIC_PAYSTACK_SECRET_KEY) {
+    return NextResponse.json(
+      { error: "Server configuration error: Paystack key missing" },
+      { status: 500 }
+    );
+  }
+
   if (!accountNumber || !bankCode) {
     return NextResponse.json(
       { error: "Account number and bank code are required" },
@@ -19,7 +36,7 @@ export async function GET(request) {
       {
         method: "GET",
         headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_PAYSTACK_SECRET_KEY}`,
         },
       }
     );

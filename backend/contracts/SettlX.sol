@@ -12,6 +12,7 @@ contract SettlX is ReentrancyGuard {
 
     IERC20 public immutable stableToken; // e.g. USDC
     uint256 private nextPaymentId = 1;
+    uint256[] private allPayments; // track all payment IDs for admin
 
     enum Status {
         Pending,
@@ -29,8 +30,23 @@ contract SettlX is ReentrancyGuard {
         Status status;
     }
 
+    struct MerchantInfo {
+        string bankName;
+        string accountName;
+        string accountNumber;
+        bool isRegistered;
+    }
+
     mapping(uint256 => Payment) public payments;
     mapping(address => uint256[]) private merchantPayments;
+    mapping(address => MerchantInfo) public merchants;
+
+    event MerchantRegistered(
+        address indexed merchant,
+        string bankName,
+        string accountName,
+        string accountNumber
+    );
 
     event PaymentCreated(
         uint256 indexed id,
@@ -131,5 +147,38 @@ contract SettlX is ReentrancyGuard {
             p.rfce,
             p.status
         );
+    }
+
+    /// @notice Register merchant bank details (merchant calls this)
+    function registerMerchantBankDetails(
+        string calldata bankName,
+        string calldata accountName,
+        string calldata accountNumber
+    ) external {
+        require(bytes(bankName).length > 0, "Bank name required");
+        require(bytes(accountName).length > 0, "Account name required");
+        require(bytes(accountNumber).length > 0, "Account number required");
+
+        merchants[msg.sender] = MerchantInfo({
+            bankName: bankName,
+            accountName: accountName,
+            accountNumber: accountNumber,
+            isRegistered: true
+        });
+
+        emit MerchantRegistered(
+            msg.sender,
+            bankName,
+            accountName,
+            accountNumber
+        );
+    }
+
+    function getPaymentInfo(
+        uint256 id
+    ) external view returns (Payment memory, MerchantInfo memory) {
+        Payment memory p = payments[id];
+        MerchantInfo memory m = merchants[p.merchant];
+        return (p, m);
     }
 }
