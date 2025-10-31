@@ -327,16 +327,15 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-50 text-gray-900 p-4 sm:p-8">
       <br />
       <br />
-      <br />
       <div className=" mx-auto bg-white shadow-lg rounded-xl p-6 sm:p-8">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">
               {" "}
-              Welcome to Your Merchant Dashboard{" "}
+              Hello Welcome to Your Merchant Dashboard{" "}
             </h2>
-            <p className="text-gray-600 mt-1">Hello</p>
+            {/* <p className="text-gray-600 mt-1">Hello</p> */}
           </div>
           <div className="mt-4 sm:mt-0 bg-blue-50 px-4 py-2 rounded-lg">
             <p className="text-sm text-blue-700">

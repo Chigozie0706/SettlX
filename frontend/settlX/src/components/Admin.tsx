@@ -6,7 +6,7 @@ import contractABI from "../contracts/settlX.json";
 import { readContract } from "wagmi/actions";
 import { arbitrumSepolia } from "viem/chains";
 import { createConfig } from "@privy-io/wagmi";
-import { ContractFunctionZeroDataError, http } from "viem";
+import { http } from "viem";
 
 export default function Admin() {
   const { address } = useAccount();
@@ -29,8 +29,7 @@ export default function Admin() {
     ssr: true,
   });
 
-  // Check if user is admin (you might want to implement proper admin checks)
-  const isAdmin = true; // Replace with actual admin check
+  const isAdmin = true;
 
   // Mark payment as paid
   const markAsPaid = async (paymentId: string) => {
@@ -88,6 +87,13 @@ export default function Admin() {
         (payment: any, index: number) => {
           const usdcAmount = Number(payment.amount) / 1e6;
 
+          // Calculate locked amount in NGN
+          const lockedAmountNGN =
+            payment.lockedRate && payment.amount
+              ? (Number(payment.amount) / 1e6) *
+                (Number(payment.lockedRate) / 1e18)
+              : null;
+
           // Get corresponding merchant info
           const merchantInfo = merchantsData[index];
 
@@ -112,6 +118,7 @@ export default function Admin() {
             payer: payment.payer,
             merchant: payment.merchant,
             amount: usdcAmount,
+            lockedAmountNGN: lockedAmountNGN,
             timestamp: new Date(Number(payment.timestamp) * 1000),
             rfce: payment.rfce,
             status: ["Pending", "Accepted", "Rejected", "Paid"][
@@ -132,20 +139,47 @@ export default function Admin() {
       console.log(`Processed ${processedPayments.length} payments`);
       setAllPayments(processedPayments);
 
-      // Process merchants data for the merchants tab
-      //await processMerchantsData(processedPayments);
+      // Process merchants data
+      processMerchantsData(processedPayments);
     } catch (error) {
       console.error("Error fetching all payments:", error);
-      // Fallback to individual fetching if getAllPayments fails
-      //await fetchAllPaymentsIndividual();
     } finally {
       setLoading(false);
     }
   };
 
+  // Process merchants data from payments
+  const processMerchantsData = async (payments: any[]) => {
+    const uniqueMerchants = [...new Set(payments.map((p) => p.merchant))];
+    const merchantsData = [];
+
+    for (const merchantAddress of uniqueMerchants) {
+      const merchantPayments = payments.filter(
+        (p) => p.merchant === merchantAddress
+      );
+
+      const firstPayment = merchantPayments[0];
+
+      merchantsData.push({
+        address: merchantAddress,
+        bankName: firstPayment.merchantInfo.bankName,
+        accountName: firstPayment.merchantInfo.accountName,
+        accountNumber: firstPayment.merchantInfo.accountNumber,
+        totalPayments: merchantPayments.length,
+        totalRevenue: merchantPayments
+          .filter((p) => p.status === "Accepted" || p.status === "Paid")
+          .reduce((sum, p) => sum + p.amount, 0),
+        pendingPayments: merchantPayments.filter((p) => p.status === "Pending")
+          .length,
+        isRegistered: firstPayment.merchantInfo.isRegistered,
+      });
+    }
+
+    setMerchants(merchantsData);
+  };
+
   useEffect(() => {
     const initializeAdminDashboard = async () => {
-      //   await fetchContractAdmin();
       await fetchAllPayments();
     };
 
@@ -165,7 +199,8 @@ export default function Admin() {
     (merchant) =>
       merchant.address.toLowerCase().includes(searchTerm.toLowerCase()) ||
       merchant.bankName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      merchant.accountName.toLowerCase().includes(searchTerm.toLowerCase())
+      merchant.accountName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      merchant.accountNumber.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   // Calculate statistics
@@ -333,8 +368,7 @@ export default function Admin() {
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
             <div className="flex space-x-4">
               <button
-                // onClick={() => setActiveTab("overview")}
-                onClick={fetchAllPayments}
+                onClick={() => setActiveTab("overview")}
                 className={`px-4 py-2 rounded-lg font-medium ${
                   activeTab === "overview"
                     ? "bg-blue-600 text-white"
@@ -392,7 +426,12 @@ export default function Admin() {
                         </th>
                         <th className="text-left p-4 font-medium">Payer</th>
                         <th className="text-left p-4 font-medium">Merchant</th>
-                        <th className="text-right p-4 font-medium">Amount</th>
+                        <th className="text-right p-4 font-medium">
+                          USDC Amount
+                        </th>
+                        <th className="text-right p-4 font-medium">
+                          Locked Amount (NGN)
+                        </th>
                         <th className="text-right p-4 font-medium">Status</th>
                         <th className="text-right p-4 font-medium">Date</th>
                         <th className="text-right p-4 font-medium">Actions</th>
@@ -420,7 +459,12 @@ export default function Admin() {
                             </div>
                           </td>
                           <td className="text-right p-4 font-medium text-gray-900">
-                            {payment.amount.toFixed(3)} USDC
+                            {payment.amount.toFixed(2)} USDC
+                          </td>
+                          <td className="text-right p-4 font-medium text-gray-900">
+                            {payment.lockedAmountNGN
+                              ? payment.lockedAmountNGN.toFixed(2) + " NGN"
+                              : "Not locked"}
                           </td>
                           <td className="text-right p-4">
                             <span
@@ -485,6 +529,9 @@ export default function Admin() {
                               {merchant.accountName !== "N/A"
                                 ? merchant.accountName
                                 : "Unregistered"}
+                            </div>
+                            <div className="text-xs text-gray-500 font-mono">
+                              Acc: {merchant.accountNumber}
                             </div>
                             <div className="text-xs text-gray-500 font-mono">
                               {merchant.address.slice(0, 8)}...
@@ -612,7 +659,12 @@ export default function Admin() {
                       <th className="text-left p-4 font-medium">Payer</th>
                       <th className="text-left p-4 font-medium">Merchant</th>
                       <th className="text-left p-4 font-medium">Reference</th>
-                      <th className="text-right p-4 font-medium">Amount</th>
+                      <th className="text-right p-4 font-medium">
+                        USDC Amount
+                      </th>
+                      <th className="text-right p-4 font-medium">
+                        Locked Amount (NGN)
+                      </th>
                       <th className="text-right p-4 font-medium">Status</th>
                       <th className="text-right p-4 font-medium">Date</th>
                       <th className="text-right p-4 font-medium">Actions</th>
@@ -643,7 +695,12 @@ export default function Admin() {
                           {payment.rfce}
                         </td>
                         <td className="text-right p-4 font-medium text-gray-900">
-                          {payment.amount.toFixed(3)} USDC
+                          {payment.amount.toFixed(2)} USDC
+                        </td>
+                        <td className="text-right p-4 font-medium text-gray-900">
+                          {payment.lockedAmountNGN
+                            ? payment.lockedAmountNGN.toFixed(2) + " NGN"
+                            : "Not locked"}
                         </td>
                         <td className="text-right p-4">
                           <span
@@ -704,6 +761,9 @@ export default function Admin() {
                       <th className="text-left p-4 font-medium">
                         Bank Details
                       </th>
+                      <th className="text-left p-4 font-medium">
+                        Account Number
+                      </th>
                       <th className="text-right p-4 font-medium">
                         Total Payments
                       </th>
@@ -732,13 +792,22 @@ export default function Admin() {
                                 {merchant.accountName}
                               </div>
                               <div className="text-xs text-gray-500">
-                                {merchant.bankName} - {merchant.accountNumber}
+                                {merchant.bankName}
                               </div>
                             </div>
                           ) : (
                             <span className="text-gray-400 text-sm">
                               Not Registered
                             </span>
+                          )}
+                        </td>
+                        <td className="p-4">
+                          {merchant.isRegistered ? (
+                            <div className="text-sm font-medium text-gray-900 font-mono">
+                              {merchant.accountNumber}
+                            </div>
+                          ) : (
+                            <span className="text-gray-400 text-sm">N/A</span>
                           )}
                         </td>
                         <td className="text-right p-4 font-medium text-gray-900">
