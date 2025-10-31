@@ -325,6 +325,9 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 p-4 sm:p-8">
+      <br />
+      <br />
+      <br />
       <div className=" mx-auto bg-white shadow-lg rounded-xl p-6 sm:p-8">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8">
@@ -410,29 +413,39 @@ export default function Dashboard() {
                       className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
                     >
                       <option value="">Select Bank</option>
-                      <option value="044">Access Bank</option>
-                      <option value="058">GTBank</option>
-                      <option value="030">Heritage Bank</option>
-                      <option value="032">First Bank</option>
-                      <option value="033">United Bank for Africa</option>
-                      <option value="035">Wema Bank</option>
-                      <option value="050">Ecobank Nigeria</option>
-                      <option value="070">Fidelity Bank</option>
-                      <option value="011">First Bank of Nigeria</option>
-                      <option value="214">First City Monument Bank</option>
-                      <option value="301">Jaiz Bank</option>
-                      <option value="082">Keystone Bank</option>
-                      <option value="076">Polaris Bank</option>
-                      <option value="101">Providus Bank</option>
-                      <option value="221">Stanbic IBTC Bank</option>
-                      <option value="068">Standard Chartered Bank</option>
-                      <option value="232">Sterling Bank</option>
-                      <option value="100">Suntrust Bank</option>
-                      <option value="032">Union Bank of Nigeria</option>
-                      <option value="215">Unity Bank</option>
-                      <option value="035">VFD Microfinance Bank</option>
-                      <option value="035">Wema Bank</option>
-                      <option value="035">Zenith Bank</option>
+                      <option value="Access Bank">Access Bank</option>
+                      <option value="GTBank Bank">GTBank Bank</option>
+                      <option value="Heritage Bank">Heritage Bank</option>
+                      <option value="First Bank">First Bank</option>
+                      <option value="United Bank for Africa">
+                        United Bank for Africa
+                      </option>
+                      <option value="Wema Bank">Wema Bank</option>
+                      <option value="Ecobank Nigeria">Ecobank Nigeria</option>
+                      <option value="Fidelity Bank">Fidelity Bank</option>
+                      <option value="First Bankof Nigeria ">
+                        First Bank of Nigeria
+                      </option>
+                      <option value="First City of Nigeria">
+                        First City Monument Bank
+                      </option>
+                      <option value="Jaiz Bank">Jaiz Bank</option>
+                      <option value="Keystone Bank">Keystone Bank</option>
+                      <option value="Polaris Bank">Polaris Bank</option>
+                      <option value="Providus Bank">Providus Bank</option>
+                      <option value="Stanbic IBTC ">Stanbic IBTC Bank</option>
+                      <option value="Standard Chartered ">
+                        Standard Chartered Bank
+                      </option>
+                      <option value="Sterling Bank">Sterling Bank</option>
+                      <option value="Suntrust Bank">Suntrust Bank</option>
+                      <option value="Union Bank ">Union Bank of Nigeria</option>
+                      <option value="Unity Bank">Unity Bank</option>
+                      <option value="VFD Microfinance Bank">
+                        VFD Microfinance Bank
+                      </option>
+                      <option value="Wema Bank">Wema Bank</option>
+                      <option value="Zenith Bank">Zenith Bank</option>
                     </select>
                   </div>
 

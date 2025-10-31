@@ -13,9 +13,9 @@ export default function HeroSection() {
           currency.
         </p>
 
-        <button className="mt-8 bg-fuchsia-600 hover:bg-fuchsia-700 text-white font-bold px-8 py-3 rounded-lg border border-fuchsia-500">
+        {/* <button className="mt-8 bg-fuchsia-600 hover:bg-fuchsia-700 text-white font-bold px-8 py-3 rounded-lg border border-fuchsia-500">
           CONNECT WALLET
-        </button>
+        </button> */}
 
         <p className="text-sm text-gray-400 mt-3">
           Supported By: <span className="text-white">Privy</span>
