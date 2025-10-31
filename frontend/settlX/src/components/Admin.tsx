@@ -243,6 +243,8 @@ export default function Admin() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
+      <br />
+      <br />
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-8">

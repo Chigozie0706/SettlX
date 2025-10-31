@@ -50,7 +50,7 @@ export default function Navbar() {
   const displayAddress = address || user?.wallet?.address;
 
   return (
-    <nav className="fixed w-full bg-gray-900 text-white shadow-lg px-6 py-4 fixed transition-colors duration-300">
+    <nav className="fixed top-0 left-0 w-full bg-gray-900 text-white shadow-lg px-6 py-4 z-50 transition-colors duration-300">
       <div className="flex items-center justify-between">
         {/* Logo */}
         <div className="text-fuchsia-400 text-xl font-bold">
