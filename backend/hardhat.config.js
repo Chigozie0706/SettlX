@@ -1,6 +1,8 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
+const { MNEMONIC } = process.env;
+
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
@@ -16,8 +18,14 @@ module.exports = {
   networks: {
     arbitrum_sepolia: {
       url: `https://sepolia-rollup.arbitrum.io/rpc`,
-      accounts: [process.env.PRIVATE_KEY],
+      accounts: { mnemonic: MNEMONIC },
       chainId: 421614,
+    },
+    arbitrum_one: {
+      url: `https://arb1.arbitrum.io/rpc`,
+      // accounts: { mnemonic: MNEMONIC },
+      accounts: [process.env.PRIVATE_KEY],
+      chainId: 42161,
     },
   },
 };

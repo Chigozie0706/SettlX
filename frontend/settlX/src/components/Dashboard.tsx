@@ -5,7 +5,7 @@ import { useAccount, useReadContract, useWriteContract } from "wagmi";
 import { http } from "viem";
 import contractABI from "../contracts/settlX.json";
 import { readContract } from "wagmi/actions";
-import { arbitrumSepolia } from "viem/chains";
+import { arbitrum } from "viem/chains";
 import { createConfig } from "@privy-io/wagmi";
 import { aggregatorV3InterfaceABI } from "../contracts/aggregrator";
 
@@ -13,7 +13,7 @@ export default function Dashboard() {
   const { address } = useAccount();
   const [payments, setPayments] = useState<any[]>([]);
   const [exchangeRate, setExchangeRate] = useState<number>(1500); // Default rate, you can fetch from API
-  const CONTRACT_ADDRESS = "0x4DD6C61b13B5DF1DDFBE1c4BEfAF82FB785E2917";
+  const CONTRACT_ADDRESS = "0x42F6d54A4C771894aD29063b3451C6206cc405f7";
 
   const [accountNumber, setAccountNumber] = useState("");
   const [bankCode, setBankCode] = useState("");
@@ -36,9 +36,9 @@ export default function Dashboard() {
   });
 
   const config = createConfig({
-    chains: [arbitrumSepolia],
+    chains: [arbitrum],
     transports: {
-      [arbitrumSepolia.id]: http("https://sepolia-rollup.arbitrum.io/rpc"),
+      [arbitrum.id]: http("https://arb1.arbitrum.io/rpc"),
     },
     ssr: true,
   });
@@ -55,7 +55,7 @@ export default function Dashboard() {
     abi: aggregatorV3InterfaceABI,
     address: usdcUsdPriceFeed,
     functionName: "latestRoundData",
-    chainId: arbitrumSepolia.id,
+    chainId: arbitrum.id,
   });
 
   // Extract price data from the tuple

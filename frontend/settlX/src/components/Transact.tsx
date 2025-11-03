@@ -7,7 +7,7 @@ import contractABI from "../contracts/settlX.json";
 import toast from "react-hot-toast";
 import { readContract } from "wagmi/actions";
 import { createConfig } from "@privy-io/wagmi";
-import { arbitrumSepolia } from "viem/chains";
+import { arbitrum } from "viem/chains";
 import { aggregatorV3InterfaceABI } from "../contracts/aggregrator";
 
 export default function Transact() {
@@ -24,14 +24,14 @@ export default function Transact() {
   const [isApprovalConfirmed, setIsApprovalConfirmed] = useState(false);
 
   // Contract addresses
-  const USDC_ADDRESS = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d";
-  const CONTRACT_ADDRESS = "0x4DD6C61b13B5DF1DDFBE1c4BEfAF82FB785E2917";
+  const USDC_ADDRESS = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+  const CONTRACT_ADDRESS = "0x42F6d54A4C771894aD29063b3451C6206cc405f7";
   const usdcUsdPriceFeed = "0x0153002d20B96532C639313c2d54c3dA09109309";
 
   const config = createConfig({
-    chains: [arbitrumSepolia],
+    chains: [arbitrum],
     transports: {
-      [arbitrumSepolia.id]: http("https://sepolia-rollup.arbitrum.io/rpc"),
+      [arbitrum.id]: http("https://arb1.arbitrum.io/rpc"),
     },
     ssr: true,
   });
@@ -49,7 +49,7 @@ export default function Transact() {
     abi: aggregatorV3InterfaceABI,
     address: usdcUsdPriceFeed,
     functionName: "latestRoundData",
-    chainId: arbitrumSepolia.id,
+    chainId: arbitrum.id,
   });
 
   const usdcPrice = roundData ? Number(roundData[1]) / 10 ** 8 : null;

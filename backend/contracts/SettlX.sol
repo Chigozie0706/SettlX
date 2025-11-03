@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
+/**
+ * @title SettlX - De-risked Merchant Settlement Contract
+ * @author
+ * @notice This contract enables secure crypto-to-fiat settlements between payers and merchants.
+ * @dev Funds are held in escrow until the merchant accepts or rejects the payment.
+ * The admin manages final payment settlement after fiat disbursement.
+ */
+
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -10,10 +18,16 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interf
 contract SettlX is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    IERC20 public immutable stableToken; // e.g. USDC
+    /// @notice ERC20 stable token used for payments (e.g., USDC)
+    IERC20 public immutable stableToken;
+
+    /// @notice Counter for generating unique payment IDs
     uint256 private nextPaymentId = 1;
+
+    /// @notice Admin address (controls off-chain fiat settlements)
     address public admin;
 
+    /// @notice Possible states of a payment
     enum Status {
         Pending,
         Accepted,
@@ -21,6 +35,7 @@ contract SettlX is ReentrancyGuard {
         Paid
     }
 
+    /// @notice Represents a single payment record
     struct Payment {
         uint256 id;
         address payer;
@@ -33,6 +48,7 @@ contract SettlX is ReentrancyGuard {
         uint256 rateLockTimestamp;
     }
 
+    /// @notice Merchant bank details for fiat settlements
     struct MerchantInfo {
         string bankName;
         string accountName;
@@ -40,11 +56,19 @@ contract SettlX is ReentrancyGuard {
         bool isRegistered;
     }
 
+    /// @dev Stores all payments by ID
     mapping(uint256 => Payment) public payments;
+
+    /// @dev Tracks payments made to each merchant
     mapping(address => uint256[]) private merchantPayments;
+
+    /// @dev Tracks bank details of registered merchants
     mapping(address => MerchantInfo) public merchants;
+
+    /// @dev Tracks payments made by each payer
     mapping(address => uint256[]) private payerPayments;
 
+    /// @notice Emitted when a merchant registers their bank details
     event MerchantRegistered(
         address indexed merchant,
         string bankName,
@@ -52,6 +76,7 @@ contract SettlX is ReentrancyGuard {
         string accountNumber
     );
 
+    /// @notice Emitted when a new payment is created
     event PaymentCreated(
         uint256 indexed id,
         address indexed payer,
@@ -59,22 +84,39 @@ contract SettlX is ReentrancyGuard {
         uint256 amount,
         string rfce
     );
+
+    /// @notice Emitted when a payment is accepted by the merchant
     event PaymentAccepted(uint256 indexed id, uint256 lockedRate);
+
+    /// @notice Emitted when a payment is rejected by the merchant
     event PaymentRejected(uint256 indexed id);
+
+    /// @notice Emitted when admin marks a payment as paid
     event PaymentMarkedAsPaid(uint256 indexed id);
 
+    /**
+     * @param tokenAddress Address of the ERC20 stable token (e.g., USDC)
+     * @dev Sets the stable token and assigns deployer as admin.
+     */
     constructor(address tokenAddress) {
         require(tokenAddress != address(0), "Invalid token");
         stableToken = IERC20(tokenAddress);
         admin = msg.sender;
     }
 
+    /// @notice Restricts access to the admin only
     modifier onlyAdmin() {
         require(msg.sender == admin, "Only admin can call this");
         _;
     }
 
-    /// @notice Payer must approve contract first
+    /**
+     * @notice Allows a payer to make a payment to a merchant (escrowed until accepted/rejected)
+     * @dev Payer must have approved this contract to spend tokens beforehand.
+     * @param merchant Address of the merchant to be paid
+     * @param amount Amount to be paid (in stable tokens)
+     * @param rfce Unique transaction reference code
+     */
     function payMerchant(
         address merchant,
         uint256 amount,
@@ -103,7 +145,13 @@ contract SettlX is ReentrancyGuard {
         emit PaymentCreated(id, msg.sender, merchant, amount, rfce);
     }
 
-    /// @notice Merchant accepts payment and locks exchange rate in one transaction
+    /**
+     * @notice Allows merchant to accept a payment and lock exchange rate
+     * @param paymentId ID of the payment being accepted
+     * @param rate Exchange rate locked for settlement
+     * @dev Transfers escrowed funds to admin wallet for off-chain settlement
+     */
+
     function acceptPaymentWithRate(
         uint256 paymentId,
         uint256 rate
@@ -123,7 +171,11 @@ contract SettlX is ReentrancyGuard {
         emit PaymentAccepted(paymentId, rate);
     }
 
-    /// @notice Merchant rejects payment -> refund to payer
+    /**
+     * @notice Allows merchant to reject a payment
+     * @param paymentId ID of the payment being rejected
+     * @dev Refunds the payer immediately
+     */
     function rejectPayment(uint256 paymentId) external nonReentrant {
         Payment storage p = payments[paymentId];
         require(p.merchant == msg.sender, "Not your payment");
@@ -135,14 +187,17 @@ contract SettlX is ReentrancyGuard {
         emit PaymentRejected(paymentId);
     }
 
-    /// @notice View all payment IDs for a merchant
+    /**
+     * @notice Returns all payment IDs associated with a merchant
+     * @param merchant Address of merchant
+     * @return List of payment IDs
+     */
     function getMerchantPaymentIds(
         address merchant
     ) external view returns (uint256[] memory) {
         return merchantPayments[merchant];
     }
 
-    /// @notice Get full details of a specific payment
     function getPayment(
         uint256 paymentId
     )
@@ -170,7 +225,12 @@ contract SettlX is ReentrancyGuard {
         );
     }
 
-    /// @notice Register merchant bank details (merchant calls this)
+    /**
+     * @notice Registers merchant bank details for fiat settlements
+     * @param bankName Merchant's bank name
+     * @param accountName Merchant's bank account name
+     * @param accountNumber Merchant's bank account number
+     */
     function registerMerchantBankDetails(
         string calldata bankName,
         string calldata accountName,
@@ -195,7 +255,6 @@ contract SettlX is ReentrancyGuard {
         );
     }
 
-    /// @notice Admin can view a merchant's bank details
     function getMerchantBankDetails(
         address merchant
     )
@@ -211,14 +270,12 @@ contract SettlX is ReentrancyGuard {
         return (info.bankName, info.accountName, info.accountNumber);
     }
 
-    // function getPaymentInfo(
-    //     uint256 id
-    // ) external view returns (Payment memory, MerchantInfo memory) {
-    //     Payment memory p = payments[id];
-    //     MerchantInfo memory m = merchants[p.merchant];
-    //     return (p, m);
-    // }
-
+    /**
+     * @notice Returns full list of all payments with associated merchant info
+     * @dev Designed for admin or off-chain dashboard queries
+     * @return allPayments Array of all Payment structs
+     * @return allMerchants Array of corresponding MerchantInfo structs
+     */
     function getAllPayments()
         external
         view
@@ -236,14 +293,21 @@ contract SettlX is ReentrancyGuard {
         return (allPayments, allMerchants);
     }
 
-    /// @notice Get all payment IDs for a payer
+    /**
+     * @notice Returns all payment IDs associated with a payer
+     * @param payer Address of payer
+     * @return List of payment IDs
+     */
     function getPayerPaymentIds(
         address payer
     ) external view returns (uint256[] memory) {
         return payerPayments[payer];
     }
 
-    /// @notice Admin marks payment as paid (after processing bank transfer)
+    /**
+     * @notice Admin marks a payment as paid after fiat transfer is completed
+     * @param paymentId ID of the payment to update
+     */
     function markAsPaid(uint256 paymentId) external onlyAdmin nonReentrant {
         Payment storage p = payments[paymentId];
         require(p.status == Status.Accepted, "Payment must be accepted first");
