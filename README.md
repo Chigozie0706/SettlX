@@ -1,4 +1,4 @@
-"# SettlX"
+# SettlX
 
 SETTIX is a Web3 payment platform built to make online transactions faster,secure, transparent, and more reliable. It uses smart contracts to automate settlements between users so payments can happen instantly without needing centralized systems or third-party control.
 

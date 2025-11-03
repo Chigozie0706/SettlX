@@ -17,7 +17,7 @@ export default function Admin() {
   const [searchTerm, setSearchTerm] = useState("");
   const [markingAsPaid, setMarkingAsPaid] = useState<string | null>(null);
 
-  const CONTRACT_ADDRESS = "0x42F6d54A4C771894aD29063b3451C6206cc405f7";
+  const CONTRACT_ADDRESS = "0xA0FeAB4eC9C431e36c0d901ada9b040aD2D85A82";
   console.log(CONTRACT_ADDRESS);
   const { writeContract: writeMarkAsPaid } = useWriteContract();
 

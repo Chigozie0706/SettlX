@@ -13,7 +13,7 @@ export default function Dashboard() {
   const { address } = useAccount();
   const [payments, setPayments] = useState<any[]>([]);
   const [exchangeRate, setExchangeRate] = useState<number>(1500); // Default rate, you can fetch from API
-  const CONTRACT_ADDRESS = "0x42F6d54A4C771894aD29063b3451C6206cc405f7";
+  const CONTRACT_ADDRESS = "0xA0FeAB4eC9C431e36c0d901ada9b040aD2D85A82";
 
   const [accountNumber, setAccountNumber] = useState("");
   const [bankCode, setBankCode] = useState("");
@@ -43,7 +43,7 @@ export default function Dashboard() {
     ssr: true,
   });
 
-  const usdcUsdPriceFeed = "0x0153002d20B96532C639313c2d54c3dA09109309";
+  const usdcUsdPriceFeed = "0x50834F3163758fcC1Df9973b6e91f0F0F0434aD3";
 
   const {
     data: roundData,
