@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useState } from "react";
 import { useAccount, useReadContract, useWriteContract } from "wagmi";
 import contractABI from "../contracts/settlX.json";
@@ -44,7 +42,7 @@ export default function Admin() {
 
       // Update local state immediately for better UX
       setAllPayments((prev) =>
-        prev.map((p) => (p.id === paymentId ? { ...p, status: "Paid" } : p))
+        prev.map((p) => (p.id === paymentId ? { ...p, status: "Paid" } : p)),
       );
 
       console.log("Payment marked as paid successfully");
@@ -79,7 +77,7 @@ export default function Admin() {
       }
 
       console.log(
-        `Found ${paymentsData.length} payments and ${merchantsData.length} merchant records`
+        `Found ${paymentsData.length} payments and ${merchantsData.length} merchant records`,
       );
 
       // Process payments data
@@ -133,7 +131,7 @@ export default function Admin() {
                 : null,
             merchantInfo: merchantInfoProcessed,
           };
-        }
+        },
       );
 
       console.log(`Processed ${processedPayments.length} payments`);
@@ -155,7 +153,7 @@ export default function Admin() {
 
     for (const merchantAddress of uniqueMerchants) {
       const merchantPayments = payments.filter(
-        (p) => p.merchant === merchantAddress
+        (p) => p.merchant === merchantAddress,
       );
 
       const firstPayment = merchantPayments[0];
@@ -192,7 +190,7 @@ export default function Admin() {
       payment.payer.toLowerCase().includes(searchTerm.toLowerCase()) ||
       payment.merchant.toLowerCase().includes(searchTerm.toLowerCase()) ||
       payment.rfce.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      payment.id.toString().includes(searchTerm)
+      payment.id.toString().includes(searchTerm),
   );
 
   const filteredMerchants = merchants.filter(
@@ -200,20 +198,20 @@ export default function Admin() {
       merchant.address.toLowerCase().includes(searchTerm.toLowerCase()) ||
       merchant.bankName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       merchant.accountName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      merchant.accountNumber.toLowerCase().includes(searchTerm.toLowerCase())
+      merchant.accountNumber.toLowerCase().includes(searchTerm.toLowerCase()),
   );
 
   // Calculate statistics
   const totalTransactions = allPayments.length;
   const totalVolume = allPayments.reduce((sum, p) => sum + p.amount, 0);
   const pendingTransactions = allPayments.filter(
-    (p) => p.status === "Pending"
+    (p) => p.status === "Pending",
   ).length;
   const acceptedTransactions = allPayments.filter(
-    (p) => p.status === "Accepted"
+    (p) => p.status === "Accepted",
   ).length;
   const paidTransactions = allPayments.filter(
-    (p) => p.status === "Paid"
+    (p) => p.status === "Paid",
   ).length;
   const registeredMerchants = merchants.filter((m) => m.isRegistered).length;
 
@@ -474,10 +472,10 @@ export default function Admin() {
                                 payment.status === "Pending"
                                   ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
                                   : payment.status === "Accepted"
-                                  ? "bg-blue-100 text-blue-800 border border-blue-200"
-                                  : payment.status === "Paid"
-                                  ? "bg-green-100 text-green-800 border border-green-200"
-                                  : "bg-red-100 text-red-800 border border-red-200"
+                                    ? "bg-blue-100 text-blue-800 border border-blue-200"
+                                    : payment.status === "Paid"
+                                      ? "bg-green-100 text-green-800 border border-green-200"
+                                      : "bg-red-100 text-red-800 border border-red-200"
                               }`}
                             >
                               {payment.status}
@@ -631,7 +629,7 @@ export default function Admin() {
                               style={{
                                 width: `${
                                   (allPayments.filter(
-                                    (p) => p.status === "Rejected"
+                                    (p) => p.status === "Rejected",
                                   ).length /
                                     totalTransactions) *
                                   100
@@ -710,10 +708,10 @@ export default function Admin() {
                               payment.status === "Pending"
                                 ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
                                 : payment.status === "Accepted"
-                                ? "bg-blue-100 text-blue-800 border border-blue-200"
-                                : payment.status === "Paid"
-                                ? "bg-green-100 text-green-800 border border-green-200"
-                                : "bg-red-100 text-red-800 border border-red-200"
+                                  ? "bg-blue-100 text-blue-800 border border-blue-200"
+                                  : payment.status === "Paid"
+                                    ? "bg-green-100 text-green-800 border border-green-200"
+                                    : "bg-red-100 text-red-800 border border-red-200"
                             }`}
                           >
                             {payment.status}
