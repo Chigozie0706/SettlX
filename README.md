@@ -115,99 +115,23 @@ Bank details (bank name, account name, account number) are stored on-chain as **
 
 ## Contract Functions
 
-### Initialization
+**Core Smart Contract Capabilities**
 
-```rust
-pub fn init(&mut self, token_address: Address) -> Result<(), SettlXError>
-```
+1. Create Payment (Escrow)
+   A payer sends USDC to the contract, which securely holds the funds in escrow until the merchant takes action.
 
-Initializes the contract with the USDC token address. Sets the deployer as admin. Must be called once after deployment.
+2. Lock Exchange Rate:
+   The merchant accepts the payment and locks the FX rate on-chain at that exact moment.
+   This guarantees the NGN amount they will receive, eliminating volatility risk.
 
----
+3. Reject & Refund:
+   If the merchant declines the transaction, funds are automatically refunded to the payer.
 
-### Payer Functions
+4. Confirm Settlement:
+   After sending NGN to the merchant’s bank account, the admin confirms the payout on-chain, marking the payment as fully settled.
 
-```rust
-pub fn pay_merchant(
-    &mut self,
-    merchant: Address,
-    amount: U256,
-    rfce: String,
-) -> Result<(), SettlXError>
-```
-
-Creates a new payment. Transfers USDC from payer to contract escrow. The `rfce` (reference) string is hashed with keccak256 before storage but emitted in plaintext via the `PaymentCreated` event.
-
-**Requirements:**
-
-- Payer must have approved the contract to spend `amount` USDC
-- `merchant` must not be the zero address
-- `amount` must be greater than zero
-
----
-
-### Merchant Functions
-
-```rust
-pub fn accept_payment_with_rate(
-    &mut self,
-    payment_id: U256,
-    rate: U256,
-) -> Result<(), SettlXError>
-```
-
-Locks the FX rate and accepts the payment. Transfers USDC from escrow to the admin treasury. The `rate` parameter is the NGN equivalent amount (in wei precision: NGN × 10^18).
-
-```rust
-pub fn reject_payment(&mut self, payment_id: U256) -> Result<(), SettlXError>
-```
-
-Rejects a pending payment. Refunds USDC back to the original payer.
-
-```rust
-pub fn register_merchant_bank_details(
-    &mut self,
-    bank_name: String,
-    account_name: String,
-    account_number: String,
-) -> Result<(), SettlXError>
-```
-
-Registers a merchant's Nigerian bank account on-chain. Stores keccak256 hashes. Emits plaintext strings in `MerchantRegistered` event for client-side recovery.
-
----
-
-### Admin Functions
-
-```rust
-pub fn mark_as_paid(&mut self, payment_id: U256) -> Result<(), SettlXError>
-```
-
-Marks an accepted payment as fully settled. Called by admin after confirming the NGN bank transfer has been sent to the merchant. Only callable by the admin address set during `init()`.
-
----
-
-### View Functions
-
-```rust
-pub fn get_payment(
-    &self,
-    payment_id: U256,
-) -> (U256, Address, Address, U256, U256, FixedBytes<32>, u8)
-// Returns: (id, payer, merchant, amount, timestamp, rfce_hash, status)
-
-pub fn get_merchant_payment_ids(&self, merchant: Address) -> Vec<U256>
-pub fn get_payer_payment_ids(&self, payer: Address) -> Vec<U256>
-
-pub fn get_merchant_bank_details(
-    &self,
-    merchant: Address,
-) -> (FixedBytes<32>, FixedBytes<32>, FixedBytes<32>)
-// Returns: (bank_name_hash, account_name_hash, account_number_hash)
-// Note: check if non-zero to verify registration; recover plaintext from events
-```
-
----
+5. Merchant Bank Registration:
+   Merchants register their bank details (stored as hashes for privacy) so off-chain NGN settlements can be executed securely.
 
 ## Events
 
@@ -238,27 +162,6 @@ pub fn get_merchant_bank_details(
 | `AccountNameRequired`   | Empty account name in `registerMerchantBankDetails()`          |
 | `AccountNumberRequired` | Empty account number in `registerMerchantBankDetails()`        |
 | `MustBeAcceptedFirst`   | `markAsPaid()` called on a non-Accepted payment                |
-
----
-
-## Project Structure
-
-```
-settix/
-├── src/
-│   ├── main.rs          # Entrypoint (no_main for Stylus)
-│   └── lib.rs           # Contract logic (SettlX struct + impl)
-├── Cargo.toml           # Rust dependencies and build config
-├── README.md
-└── frontend/
-    ├── app/
-    │   ├── dashboard/   # Merchant dashboard
-    │   ├── transact/    # Payer payment page
-    │   └── admin/       # Admin settlement dashboard
-    └── contracts/
-        ├── SettlX1.json # Contract ABI
-        └── aggregrator.ts # Chainlink AggregatorV3 ABI
-```
 
 ---
 
@@ -342,12 +245,13 @@ cargo stylus export-abi
 
 ## Frontend
 
-The frontend is built with **Next.js 14**, **Privy** (wallet auth), **Wagmi v2**, and **Viem**.
+The frontend is built with **Next.js 16**, **Privy** (wallet auth), **Wagmi v2**, and **Viem**.
 
 ```bash
 cd frontend
-npm install
-npm run dev
+cd settlX
+pnpm install
+pnpm run dev
 ```
 
 ### Key Frontend Features
@@ -356,7 +260,9 @@ npm run dev
 - **Merchant dashboard** — view pending/all payments, lock FX rate, see locked vs live NGN amounts
 - **Admin dashboard** — full payment history, merchant bank details from events, Mark as Paid
 
-### Recovering Plaintext Data from Events
+###
+
+Recovering Plaintext Data from Events
 
 Since `rfce` and bank details are hashed on-chain, the frontend recovers original strings from event logs:
 
@@ -388,7 +294,7 @@ const merchantLogs = await client.getLogs({
 | Blockchain         | Arbitrum Sepolia (L2)      |
 | Token Standard     | ERC-20 (USDC)              |
 | Price Oracle       | Chainlink AggregatorV3     |
-| Frontend Framework | Next.js 14 (App Router)    |
+| Frontend Framework | Next.js 16 (App Router)    |
 | Wallet Auth        | Privy                      |
 | Web3 Client        | Wagmi v2 + Viem            |
 | FX Rate API        | exchangerate.host          |
