@@ -1,0 +1,9 @@
+[workspace]
+
+[workspace.networks.arbitrum-sepolia]
+chain-id = 421614
+endpoint = "https://sepolia-rollup.arbitrum.io/rpc"
+
+[workspace.networks.arbitrum-one]
+chain-id = 42161
+endpoint = "https://arb1.arbitrum.io/rpc"

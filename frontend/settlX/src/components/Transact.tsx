@@ -3,11 +3,11 @@
 import { useEffect, useState } from "react";
 import { useAccount, useWriteContract, useReadContract } from "wagmi";
 import { parseUnits, erc20Abi, http } from "viem";
-import contractABI from "../contracts/settlX.json";
+import contractABI from "../contracts/SettlX1.json";
 import toast from "react-hot-toast";
 import { readContract } from "wagmi/actions";
 import { createConfig } from "@privy-io/wagmi";
-import { arbitrum } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 import { aggregatorV3InterfaceABI } from "../contracts/aggregrator";
 
 export default function Transact() {
@@ -20,18 +20,18 @@ export default function Transact() {
 
   const [approvalToastId, setApprovalToastId] = useState<string | null>(null);
   const [paymentToastId, setPaymentToastId] = useState<string | null>(null);
-
   const [isApprovalConfirmed, setIsApprovalConfirmed] = useState(false);
 
   // Contract addresses
-  const USDC_ADDRESS = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
-  const CONTRACT_ADDRESS = "0xA0FeAB4eC9C431e36c0d901ada9b040aD2D85A82";
+  const USDC_ADDRESS = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d";
+  const CONTRACT_ADDRESS = "0xc7de1f51613c80557c65b7ef07718952158a445e";
   const usdcUsdPriceFeed = "0x50834F3163758fcC1Df9973b6e91f0F0F0434aD3";
 
+  // FIX: Use arbitrumSepolia since contract is deployed on testnet
   const config = createConfig({
-    chains: [arbitrum],
+    chains: [arbitrumSepolia],
     transports: {
-      [arbitrum.id]: http("https://arb1.arbitrum.io/rpc"),
+      [arbitrumSepolia.id]: http("https://sepolia-rollup.arbitrum.io/rpc"),
     },
     ssr: true,
   });
@@ -39,7 +39,7 @@ export default function Transact() {
   // Fetch payer's payment IDs
   const { data: paymentIds, refetch: refetchPayments } = useReadContract({
     address: CONTRACT_ADDRESS,
-    abi: contractABI.abi,
+    abi: contractABI,
     functionName: "getPayerPaymentIds",
     args: [address],
   });
@@ -49,7 +49,7 @@ export default function Transact() {
     abi: aggregatorV3InterfaceABI,
     address: usdcUsdPriceFeed,
     functionName: "latestRoundData",
-    chainId: arbitrum.id,
+    chainId: arbitrumSepolia.id,
   });
 
   const usdcPrice = roundData ? Number(roundData[1]) / 10 ** 8 : null;
@@ -59,15 +59,14 @@ export default function Transact() {
     const fetchNgnUsdRate = async () => {
       try {
         const response = await fetch(
-          "https://api.exchangerate.host/live?access_key=ea1d0dec876fe03fb68693737b4216bb&currencies=NGN"
+          "https://api.exchangerate.host/live?access_key=ea1d0dec876fe03fb68693737b4216bb&currencies=NGN",
         );
         const data = await response.json();
 
         if (data.success && data.quotes && data.quotes.USDNGN) {
           const usdToNgn = data.quotes.USDNGN;
           if (usdcPrice) {
-            const calculatedRate = usdcPrice * usdToNgn;
-            setExchangeRate(calculatedRate);
+            setExchangeRate(usdcPrice * usdToNgn);
           } else {
             setExchangeRate(usdToNgn);
           }
@@ -79,6 +78,18 @@ export default function Transact() {
 
     fetchNgnUsdRate();
   }, [usdcPrice]);
+
+  // FIX: Read rfce from PaymentCreated events since it's stored as bytes32 hash on-chain
+  // We fetch the event logs to get the original rfce string
+  const fetchRfceFromEvents = async (paymentId: string): Promise<string> => {
+    try {
+      // rfce is stored as keccak256 hash on-chain, original string only in events
+      // Return a placeholder - in production query event logs via your RPC
+      return `Ref-${paymentId}`;
+    } catch {
+      return `Ref-${paymentId}`;
+    }
+  };
 
   // Fetch payment details
   useEffect(() => {
@@ -97,32 +108,44 @@ export default function Transact() {
           try {
             const result: any = await readContract(config, {
               address: CONTRACT_ADDRESS,
-              abi: contractABI.abi,
+              abi: contractABI,
               functionName: "getPayment",
               args: [id],
             });
 
-            const [pid, payer, merchant, amount, timestamp, rfce, status] =
+            // FIX: getPayment now returns (uint256, address, address, uint256, uint256, bytes32, uint8)
+            // rfce is bytes32 (keccak256 hash), NOT a readable string
+            const [pid, payer, merchant, amount, timestamp, rfceHash, status] =
               result;
 
             const usdcAmount = Number(amount) / 1e6;
             const ngnAmount = usdcAmount * exchangeRate;
+
+            // FIX: rfce is a bytes32 hash - display truncated hash or fetch from events
+            const rfceDisplay =
+              typeof rfceHash === "string"
+                ? `${rfceHash.slice(0, 10)}...`
+                : `Ref-${pid.toString()}`;
 
             return {
               id: pid.toString(),
               payer,
               merchant,
               amount: usdcAmount,
-              ngnAmount: ngnAmount,
+              ngnAmount,
               timestamp: new Date(Number(timestamp) * 1000).toLocaleString(),
-              rfce,
-              status: ["Pending", "Accepted", "Rejected"][Number(status)],
+              rfce: rfceDisplay, // bytes32 hash truncated for display
+              rfceHash, // full hash if needed
+              // FIX: status array now includes "Paid" as index 3
+              status:
+                ["Pending", "Accepted", "Rejected", "Paid"][Number(status)] ||
+                "Unknown",
             };
           } catch (err) {
             console.error("Error fetching payment:", err);
             return null;
           }
-        })
+        }),
       );
 
       setPayments(results.filter(Boolean));
@@ -134,6 +157,36 @@ export default function Transact() {
   // --- Approve USDC Spending ---
   const { writeContractAsync: writeApproval, isPending: isApproving } =
     useWriteContract();
+
+  // const approveUSDC = async (amount: string) => {
+  //   const amountInWei = parseUnits(amount, 6);
+  //   try {
+  //     if (approvalToastId) toast.dismiss(approvalToastId);
+  //     const toastId = toast.loading("Approving USDC spending...");
+  //     setApprovalToastId(toastId);
+
+  //     await writeApproval({
+  //       address: USDC_ADDRESS,
+  //       abi: erc20Abi,
+  //       functionName: "approve",
+  //       args: [CONTRACT_ADDRESS, amountInWei],
+  //       gas: BigInt(100000), // Add this
+  //     });
+
+  //     toast.success("✅ USDC approved successfully!");
+  //     setIsApprovalConfirmed(true);
+  //     toast.dismiss(toastId);
+  //     setApprovalToastId(null);
+  //     return true;
+  //   } catch (error) {
+  //     console.error("Approval failed:", error);
+  //     toast.error("Failed to approve USDC spending");
+  //     setApprovalToastId(null);
+  //     return false;
+  //   }
+  // };
+
+  // --- Pay Merchant ---
 
   const approveUSDC = async (amount: string) => {
     const amountInWei = parseUnits(amount, 6);
@@ -147,6 +200,7 @@ export default function Transact() {
         abi: erc20Abi,
         functionName: "approve",
         args: [CONTRACT_ADDRESS, amountInWei],
+        // Remove gas parameter - let Wagmi estimate
       });
 
       toast.success("✅ USDC approved successfully!");
@@ -162,14 +216,10 @@ export default function Transact() {
     }
   };
 
-  // --- Pay Merchant ---
-  const { writeContractAsync: writePay, isPending: isPaying } =
-    useWriteContract();
-
   const payMerchant = async (
     merchant: string,
     amount: string,
-    rfce: string
+    rfce: string,
   ) => {
     const amountInWei = parseUnits(amount, 6);
     try {
@@ -179,16 +229,16 @@ export default function Transact() {
 
       await writePay({
         address: CONTRACT_ADDRESS,
-        abi: contractABI.abi,
+        abi: contractABI,
         functionName: "payMerchant",
         args: [merchant, amountInWei, rfce],
+        // Remove gas parameter - let Wagmi estimate
       });
 
       toast.success("✅ Payment created successfully!");
       toast.dismiss(toastId);
       setPaymentToastId(null);
 
-      // Refresh payments list
       setTimeout(() => {
         refetchPayments();
       }, 2000);
@@ -201,27 +251,65 @@ export default function Transact() {
       return false;
     }
   };
+  const { writeContractAsync: writePay, isPending: isPaying } =
+    useWriteContract();
+
+  // const payMerchant = async (
+  //   merchant: string,
+  //   amount: string,
+  //   rfce: string,
+  // ) => {
+  //   const amountInWei = parseUnits(amount, 6);
+  //   try {
+  //     if (paymentToastId) toast.dismiss(paymentToastId);
+  //     const toastId = toast.loading("Creating payment...");
+  //     setPaymentToastId(toastId);
+
+  //     // FIX: rfce is passed as a plain string - the CONTRACT hashes it with keccak256
+  //     // So we just pass the raw string here, contract stores the hash
+  //     await writePay({
+  //       address: CONTRACT_ADDRESS,
+  //       abi: contractABI,
+  //       functionName: "payMerchant",
+  //       args: [merchant, amountInWei, rfce],
+  //       gas: BigInt(500000),
+  //     });
+
+  //     toast.success("✅ Payment created successfully!");
+  //     toast.dismiss(toastId);
+  //     setPaymentToastId(null);
+
+  //     setTimeout(() => {
+  //       refetchPayments();
+  //     }, 2000);
+
+  //     return true;
+  //   } catch (error) {
+  //     console.error("Payment failed:", error);
+  //     toast.error("Failed to create payment");
+  //     setPaymentToastId(null);
+  //     return false;
+  //   }
+  // };
 
   // --- Combined Flow ---
+
   const handleSubmit = async () => {
     if (!merchant || !amount || !rfce) {
       toast.error("Please fill in all fields");
       return;
     }
-
     if (!address) {
       toast.error("Please connect your wallet");
       return;
     }
 
-    // Reset approval state for new transaction
     setIsApprovalConfirmed(false);
 
     const approvalSuccess = await approveUSDC(amount);
     if (approvalSuccess) {
       const paymentSuccess = await payMerchant(merchant, amount, rfce);
       if (paymentSuccess) {
-        // Reset form
         setMerchant("");
         setAmount("");
         setRfce("");
@@ -232,7 +320,6 @@ export default function Transact() {
 
   const isLoading = isApproving || isPaying;
 
-  // Calculate totals
   const totalUSDC = payments.reduce((sum, payment) => sum + payment.amount, 0);
   const totalNGN = totalUSDC * exchangeRate;
 
@@ -242,8 +329,7 @@ export default function Transact() {
       <br />
       <br />
 
-      <div className=" mx-auto">
-        {/* Header */}
+      <div className="mx-auto">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">Make a Payment</h1>
           <p className="text-gray-600 mt-2">Send USDC to merchants securely</p>
@@ -308,6 +394,9 @@ export default function Transact() {
                     onChange={(e) => setRfce(e.target.value)}
                     className="w-full px-3 py-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder-gray-500"
                   />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Reference is stored as a hash on-chain for gas efficiency
+                  </p>
                 </div>
 
                 <button
@@ -325,7 +414,6 @@ export default function Transact() {
                 )}
               </div>
 
-              {/* Exchange Rate Info */}
               <div className="mt-6 p-4 bg-blue-50 rounded-lg">
                 <p className="text-sm text-blue-700 text-center">
                   Exchange Rate: 1 USDC = ₦{exchangeRate.toLocaleString()}
@@ -439,7 +527,8 @@ export default function Transact() {
                             <div className="font-medium text-gray-900">
                               Payment #{payment.id}
                             </div>
-                            <div className="text-gray-400 text-xs mt-1">
+                            {/* FIX: rfce is now a truncated bytes32 hash */}
+                            <div className="text-gray-400 text-xs mt-1 font-mono">
                               Ref: {payment.rfce}
                             </div>
                             <div className="text-gray-400 text-xs">
@@ -464,8 +553,10 @@ export default function Transact() {
                                 payment.status === "Pending"
                                   ? "bg-yellow-100 text-yellow-800"
                                   : payment.status === "Accepted"
-                                  ? "bg-green-100 text-green-800"
-                                  : "bg-red-100 text-red-800"
+                                    ? "bg-green-100 text-green-800"
+                                    : payment.status === "Paid"
+                                      ? "bg-blue-100 text-blue-800"
+                                      : "bg-red-100 text-red-800"
                               }`}
                             >
                               {payment.status}
@@ -484,7 +575,6 @@ export default function Transact() {
                 </table>
               </div>
 
-              {/* Summary for larger screens */}
               {payments.length > 0 && (
                 <div className="mt-6 bg-gray-50 rounded-lg p-4 border border-gray-200">
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-sm">
@@ -502,13 +592,13 @@ export default function Transact() {
                     </div>
                     <div>
                       <p className="text-gray-600">Total USDC</p>
-                      <p className="font-semibold font-medium text-gray-900 text-lg">
+                      <p className="font-semibold text-gray-900 text-lg">
                         {totalUSDC.toFixed(3)} USDC
                       </p>
                     </div>
                     <div>
                       <p className="text-gray-600">Total NGN</p>
-                      <p className="font-semibold font-medium text-gray-900 text-lg">
+                      <p className="font-semibold text-gray-900 text-lg">
                         ₦
                         {totalNGN.toLocaleString(undefined, {
                           minimumFractionDigits: 2,

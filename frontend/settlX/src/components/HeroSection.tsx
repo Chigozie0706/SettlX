@@ -1,3 +1,5 @@
+"use client";
+
 export default function HeroSection() {
   return (
     <div className="min-h-screen bg-black bg-[url('/stars-bg.png')] bg-cover bg-center text-white flex flex-col">

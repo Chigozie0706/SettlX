@@ -6,45 +6,26 @@
 // SPDX-License-Identifier: MIT-OR-APACHE-2.0
 pragma solidity ^0.8.23;
 
-interface ISettlX {
+interface ISettlX  {
     function init(address token_address) external;
 
-    function payMerchant(
-        address merchant,
-        uint256 amount,
-        string calldata rfce
-    ) external;
+    function payMerchant(address merchant, uint256 amount, string calldata rfce) external;
 
     function acceptPaymentWithRate(uint256 payment_id, uint256 rate) external;
 
     function rejectPayment(uint256 payment_id) external;
 
-    function registerMerchantBankDetails(
-        string calldata bank_name,
-        string calldata account_name,
-        string calldata account_number
-    ) external;
+    function registerMerchantBankDetails(string calldata bank_name, string calldata account_name, string calldata account_number) external;
 
     function markAsPaid(uint256 payment_id) external;
 
-    function getMerchantPaymentIds(
-        address merchant
-    ) external view returns (uint256[] memory);
+    function getMerchantPaymentIds(address merchant) external view returns (uint256[] memory);
 
-    function getPayerPaymentIds(
-        address payer
-    ) external view returns (uint256[] memory);
+    function getPayerPaymentIds(address payer) external view returns (uint256[] memory);
 
-    function getPayment(
-        uint256 payment_id
-    )
-        external
-        view
-        returns (uint256, address, address, uint256, uint256, bytes32, uint8);
+    function getPayment(uint256 payment_id) external view returns (uint256, address, address, uint256, uint256, bytes32, uint8);
 
-    function getMerchantBankDetails(
-        address merchant
-    ) external view returns (bytes32, bytes32, bytes32);
+    function getMerchantBankDetails(address merchant) external view returns (bytes32, bytes32, bytes32);
 
     error InvalidToken();
 

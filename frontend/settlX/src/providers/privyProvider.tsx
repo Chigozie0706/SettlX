@@ -5,12 +5,13 @@ import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
 import { WagmiProvider, createConfig } from "@privy-io/wagmi";
 import type { PrivyClientConfig } from "@privy-io/react-auth";
 import { useEffect } from "react";
-import { arbitrum } from "viem/chains";
+import { arbitrum, arbitrumSepolia } from "viem/chains";
 
 const config = createConfig({
-  chains: [arbitrum],
+  chains: [arbitrumSepolia],
   transports: {
-    [arbitrum.id]: http("https://arb1.arbitrum.io/rpc"),
+    // [arbitrum.id]: http("https://arb1.arbitrum.io/rpc"),
+    [arbitrumSepolia.id]: http("https://sepolia-rollup.arbitrum.io/rpc"),
   },
   ssr: true,
 });
@@ -27,7 +28,7 @@ const privyConfig: PrivyClientConfig = {
   appearance: {
     showWalletLoginFirst: true,
   },
-  defaultChain: arbitrum,
+  defaultChain: arbitrumSepolia,
 };
 const queryClient = new QueryClient({
   defaultOptions: {

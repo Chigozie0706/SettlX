@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useAccount, useReadContract, useWriteContract } from "wagmi";
-import contractABI from "../contracts/settlX.json";
+import { useAccount, useWriteContract } from "wagmi";
+import contractABI from "../contracts/SettlX1.json";
 import { readContract } from "wagmi/actions";
-import { arbitrum } from "viem/chains";
+import { arbitrumSepolia } from "viem/chains";
 import { createConfig } from "@privy-io/wagmi";
 import { http } from "viem";
 
@@ -16,38 +16,36 @@ export default function Admin() {
   const [activeTab, setActiveTab] = useState("overview");
   const [searchTerm, setSearchTerm] = useState("");
   const [markingAsPaid, setMarkingAsPaid] = useState<string | null>(null);
+  const [expandedPayment, setExpandedPayment] = useState<string | null>(null);
 
-  const CONTRACT_ADDRESS = "0xA0FeAB4eC9C431e36c0d901ada9b040aD2D85A82";
-  console.log(CONTRACT_ADDRESS);
+  const CONTRACT_ADDRESS = "0xc7de1f51613c80557c65b7ef07718952158a445e";
+
   const { writeContract: writeMarkAsPaid } = useWriteContract();
 
   const config = createConfig({
-    chains: [arbitrum],
+    chains: [arbitrumSepolia],
     transports: {
-      [arbitrum.id]: http("https://arb1.arbitrum.io/rpc"),
+      [arbitrumSepolia.id]: http("https://sepolia-rollup.arbitrum.io/rpc"),
     },
     ssr: true,
   });
 
   const isAdmin = true;
 
-  // Mark payment as paid
   const markAsPaid = async (paymentId: string) => {
     setMarkingAsPaid(paymentId);
     try {
       await writeMarkAsPaid({
         address: CONTRACT_ADDRESS,
-        abi: contractABI.abi,
+        abi: contractABI,
         functionName: "markAsPaid",
         args: [BigInt(paymentId)],
+        maxFeePerGas: BigInt(100000000),
+        maxPriorityFeePerGas: BigInt(10000000),
       });
-
-      // Update local state immediately for better UX
       setAllPayments((prev) =>
         prev.map((p) => (p.id === paymentId ? { ...p, status: "Paid" } : p)),
       );
-
-      console.log("Payment marked as paid successfully");
     } catch (err) {
       console.error("Failed to mark payment as paid:", err);
     } finally {
@@ -58,88 +56,138 @@ export default function Admin() {
   const fetchAllPayments = async () => {
     setLoading(true);
     try {
-      console.log("Fetching all payments in single call...");
-
-      const result: any = await readContract(config, {
-        address: CONTRACT_ADDRESS,
-        abi: contractABI.abi,
-        functionName: "getAllPayments",
-        args: [],
+      const { createPublicClient } = await import("viem");
+      const client = createPublicClient({
+        chain: arbitrumSepolia,
+        transport: http("https://sepolia-rollup.arbitrum.io/rpc"),
       });
 
-      console.log("Raw contract result:", result);
+      // ── 1. MerchantRegistered events → plain-text bank details ──────────────
+      const merchantLogs = await client.getLogs({
+        address: CONTRACT_ADDRESS as `0x${string}`,
+        event: {
+          type: "event",
+          name: "MerchantRegistered",
+          inputs: [
+            { type: "address", name: "merchant", indexed: true },
+            { type: "string", name: "bankName", indexed: false },
+            { type: "string", name: "accountName", indexed: false },
+            { type: "string", name: "accountNumber", indexed: false },
+          ],
+        },
+        fromBlock: BigInt(0),
+      });
 
-      const [paymentsData, merchantsData] = result;
-
-      if (!paymentsData || !merchantsData) {
-        console.log("No data returned from contract");
-        setAllPayments([]);
-        setMerchants([]);
-        return;
+      const merchantDetailsMap: Record<string, any> = {};
+      for (const log of merchantLogs) {
+        const args = log.args as any;
+        const addr = args.merchant?.toLowerCase();
+        if (addr) {
+          merchantDetailsMap[addr] = {
+            bankName: args.bankName || "N/A",
+            accountName: args.accountName || "N/A",
+            accountNumber: args.accountNumber || "N/A",
+            isRegistered: true,
+          };
+        }
       }
 
-      console.log(
-        `Found ${paymentsData.length} payments and ${merchantsData.length} merchant records`,
-      );
+      // ── 2. PaymentAccepted events → lockedRate per payment ID ───────────────
+      const acceptedLogs = await client.getLogs({
+        address: CONTRACT_ADDRESS as `0x${string}`,
+        event: {
+          type: "event",
+          name: "PaymentAccepted",
+          inputs: [
+            { type: "uint256", name: "id", indexed: true },
+            { type: "uint256", name: "lockedRate", indexed: false },
+          ],
+        },
+        fromBlock: BigInt(0),
+      });
 
-      // Process payments data
-      const processedPayments = paymentsData.map(
-        (payment: any, index: number) => {
-          const usdcAmount = Number(payment.amount) / 1e6;
+      // Map: payment id string -> lockedRate bigint (NGN per USDC × 1e18)
+      const lockedRateMap: Record<string, bigint> = {};
+      for (const log of acceptedLogs) {
+        const args = log.args as any;
+        if (args.id !== undefined && args.lockedRate !== undefined) {
+          lockedRateMap[args.id.toString()] = args.lockedRate;
+        }
+      }
 
-          // Calculate locked amount in NGN
-          const lockedAmountNGN =
-            payment.lockedRate && payment.amount
-              ? (Number(payment.amount) / 1e6) *
-                (Number(payment.lockedRate) / 1e18)
-              : null;
+      // ── 3. Probe payment IDs sequentially ───────────────────────────────────
+      const processedPayments: any[] = [];
+      let id = BigInt(1);
+      let consecutiveEmpty = 0;
+      const MAX_CONSECUTIVE_EMPTY = 3;
 
-          // Get corresponding merchant info
-          const merchantInfo = merchantsData[index];
+      while (consecutiveEmpty < MAX_CONSECUTIVE_EMPTY) {
+        try {
+          const result: any = await readContract(config, {
+            address: CONTRACT_ADDRESS,
+            abi: contractABI,
+            functionName: "getPayment",
+            args: [id],
+          });
 
-          let merchantInfoProcessed = {
+          const [pid, payer, merchant, amount, timestamp, rfceHash, status] =
+            result;
+
+          const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+          if (!pid || pid === BigInt(0) || payer === ZERO_ADDRESS) {
+            consecutiveEmpty++;
+            id++;
+            continue;
+          }
+
+          consecutiveEmpty = 0;
+
+          const usdcAmount = Number(amount) / 1e6;
+          const statusStr =
+            ["Pending", "Accepted", "Rejected", "Paid"][Number(status)] ||
+            "Unknown";
+          const rfceDisplay =
+            typeof rfceHash === "string"
+              ? `${rfceHash.slice(0, 10)}...`
+              : `Ref-${pid.toString()}`;
+
+          const merchantInfo = merchantDetailsMap[merchant?.toLowerCase()] || {
             bankName: "Not Registered",
             accountName: "N/A",
             accountNumber: "N/A",
             isRegistered: false,
           };
 
-          if (merchantInfo && merchantInfo.isRegistered) {
-            merchantInfoProcessed = {
-              bankName: merchantInfo.bankName,
-              accountName: merchantInfo.accountName,
-              accountNumber: merchantInfo.accountNumber,
-              isRegistered: true,
-            };
-          }
+          // Locked NGN = (lockedRate / 1e18) * usdcAmount
+          const rawLockedRate = lockedRateMap[pid.toString()];
+          const lockedRateNGN = rawLockedRate
+            ? Number(rawLockedRate) / 1e18
+            : null;
+          const lockedAmountNGN = lockedRateNGN
+            ? lockedRateNGN * usdcAmount
+            : null;
 
-          return {
-            id: payment.id?.toString() || (index + 1).toString(),
-            payer: payment.payer,
-            merchant: payment.merchant,
+          processedPayments.push({
+            id: pid.toString(),
+            payer,
+            merchant,
             amount: usdcAmount,
-            lockedAmountNGN: lockedAmountNGN,
-            timestamp: new Date(Number(payment.timestamp) * 1000),
-            rfce: payment.rfce,
-            status: ["Pending", "Accepted", "Rejected", "Paid"][
-              Number(payment.status)
-            ],
-            lockedRate: payment.lockedRate
-              ? Number(payment.lockedRate) / 10 ** 18
-              : null,
-            rateLockTimestamp:
-              payment.rateLockTimestamp > 0
-                ? new Date(Number(payment.rateLockTimestamp) * 1000)
-                : null,
-            merchantInfo: merchantInfoProcessed,
-          };
-        },
-      );
+            timestamp: new Date(Number(timestamp) * 1000),
+            rfce: rfceDisplay,
+            status: statusStr,
+            lockedRateNGN,
+            lockedAmountNGN,
+            merchantInfo,
+          });
 
-      console.log(`Processed ${processedPayments.length} payments`);
+          id++;
+        } catch {
+          consecutiveEmpty++;
+          id++;
+        }
+      }
+
       setAllPayments(processedPayments);
-
-      // Process merchants data
       processMerchantsData(processedPayments);
     } catch (error) {
       console.error("Error fetching all payments:", error);
@@ -148,64 +196,52 @@ export default function Admin() {
     }
   };
 
-  // Process merchants data from payments
-  const processMerchantsData = async (payments: any[]) => {
+  const processMerchantsData = (payments: any[]) => {
     const uniqueMerchants = [...new Set(payments.map((p) => p.merchant))];
-    const merchantsData = [];
-
-    for (const merchantAddress of uniqueMerchants) {
-      const merchantPayments = payments.filter(
-        (p) => p.merchant === merchantAddress,
-      );
-
-      const firstPayment = merchantPayments[0];
-
-      merchantsData.push({
+    const merchantsData = uniqueMerchants.map((merchantAddress) => {
+      const mp = payments.filter((p) => p.merchant === merchantAddress);
+      const first = mp[0];
+      return {
         address: merchantAddress,
-        bankName: firstPayment.merchantInfo.bankName,
-        accountName: firstPayment.merchantInfo.accountName,
-        accountNumber: firstPayment.merchantInfo.accountNumber,
-        totalPayments: merchantPayments.length,
-        totalRevenue: merchantPayments
+        bankName: first?.merchantInfo?.bankName || "N/A",
+        accountName: first?.merchantInfo?.accountName || "N/A",
+        accountNumber: first?.merchantInfo?.accountNumber || "N/A",
+        isRegistered: first?.merchantInfo?.isRegistered || false,
+        totalPayments: mp.length,
+        totalRevenue: mp
           .filter((p) => p.status === "Accepted" || p.status === "Paid")
-          .reduce((sum, p) => sum + p.amount, 0),
-        pendingPayments: merchantPayments.filter((p) => p.status === "Pending")
-          .length,
-        isRegistered: firstPayment.merchantInfo.isRegistered,
-      });
-    }
-
+          .reduce((s, p) => s + p.amount, 0),
+        totalNGN: mp
+          .filter((p) => p.lockedAmountNGN)
+          .reduce((s, p) => s + (p.lockedAmountNGN || 0), 0),
+        pendingPayments: mp.filter((p) => p.status === "Pending").length,
+      };
+    });
     setMerchants(merchantsData);
   };
 
   useEffect(() => {
-    const initializeAdminDashboard = async () => {
-      await fetchAllPayments();
-    };
-
-    initializeAdminDashboard();
+    fetchAllPayments();
   }, []);
 
-  // Filter payments based on search term
   const filteredPayments = allPayments.filter(
-    (payment) =>
-      payment.payer.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      payment.merchant.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      payment.rfce.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      payment.id.toString().includes(searchTerm),
+    (p) =>
+      p.payer.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.merchant.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.rfce.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.id.toString().includes(searchTerm),
   );
 
   const filteredMerchants = merchants.filter(
-    (merchant) =>
-      merchant.address.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      merchant.bankName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      merchant.accountName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      merchant.accountNumber.toLowerCase().includes(searchTerm.toLowerCase()),
+    (m) =>
+      m.address.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      m.bankName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      m.accountName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      m.accountNumber.toLowerCase().includes(searchTerm.toLowerCase()),
   );
 
-  // Calculate statistics
   const totalTransactions = allPayments.length;
-  const totalVolume = allPayments.reduce((sum, p) => sum + p.amount, 0);
+  const totalVolume = allPayments.reduce((s, p) => s + p.amount, 0);
   const pendingTransactions = allPayments.filter(
     (p) => p.status === "Pending",
   ).length;
@@ -217,14 +253,199 @@ export default function Admin() {
   ).length;
   const registeredMerchants = merchants.filter((m) => m.isRegistered).length;
 
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  const fmtNGN = (n: number) =>
+    `₦${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const StatusBadge = ({ status }: { status: string }) => {
+    const map: Record<string, string> = {
+      Pending: "bg-yellow-100 text-yellow-800 border-yellow-200",
+      Accepted: "bg-blue-100 text-blue-800 border-blue-200",
+      Paid: "bg-green-100 text-green-800 border-green-200",
+      Rejected: "bg-red-100 text-red-800 border-red-200",
+    };
+    return (
+      <span
+        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${map[status] || "bg-gray-100 text-gray-600 border-gray-200"}`}
+      >
+        {status}
+      </span>
+    );
+  };
+
+  // ── Expandable payment row ─────────────────────────────────────────────────
+  const PaymentRow = ({ payment }: { payment: any }) => {
+    const isExpanded = expandedPayment === payment.id;
+    return (
+      <>
+        <tr
+          className="border-b hover:bg-gray-50 cursor-pointer select-none"
+          onClick={() => setExpandedPayment(isExpanded ? null : payment.id)}
+        >
+          <td className="p-3">
+            <div className="flex items-center gap-2">
+              <span className="text-gray-300 text-xs">
+                {isExpanded ? "▼" : "▶"}
+              </span>
+              <span className="font-semibold text-gray-900 text-sm">
+                #{payment.id}
+              </span>
+            </div>
+          </td>
+          <td className="p-3 font-mono text-xs text-gray-500">
+            {payment.payer.slice(0, 6)}...{payment.payer.slice(-4)}
+          </td>
+          <td className="p-3">
+            {payment.merchantInfo.isRegistered ? (
+              <div>
+                <p className="text-sm font-medium text-gray-900 leading-tight">
+                  {payment.merchantInfo.accountName}
+                </p>
+                <p className="text-xs text-gray-400">
+                  {payment.merchantInfo.bankName}
+                </p>
+              </div>
+            ) : (
+              <span className="font-mono text-xs text-gray-400">
+                {payment.merchant.slice(0, 6)}...{payment.merchant.slice(-4)}
+              </span>
+            )}
+          </td>
+          <td className="p-3 text-right">
+            <p className="font-semibold text-gray-900 text-sm">
+              {payment.amount.toFixed(2)} USDC
+            </p>
+            {payment.lockedAmountNGN && (
+              <p className="text-xs text-green-700 font-medium">
+                {fmtNGN(payment.lockedAmountNGN)}
+              </p>
+            )}
+            {!payment.lockedAmountNGN && payment.status === "Pending" && (
+              <p className="text-xs text-gray-400">Rate not locked</p>
+            )}
+          </td>
+          <td className="p-3 text-right">
+            <StatusBadge status={payment.status} />
+          </td>
+          <td className="p-3 text-right text-xs text-gray-400">
+            {payment.timestamp.toLocaleDateString()}
+          </td>
+          <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
+            {payment.status === "Accepted" && (
+              <button
+                onClick={() => markAsPaid(payment.id)}
+                disabled={markingAsPaid === payment.id}
+                className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs hover:bg-green-700 font-medium disabled:opacity-50 whitespace-nowrap"
+              >
+                {markingAsPaid === payment.id
+                  ? "Processing..."
+                  : "Mark as Paid"}
+              </button>
+            )}
+            {payment.status === "Paid" && (
+              <span className="text-green-600 text-xs font-semibold">
+                ✓ Paid
+              </span>
+            )}
+          </td>
+        </tr>
+
+        {/* Expanded detail panel */}
+        {isExpanded && (
+          <tr className="bg-blue-50/60 border-b">
+            <td colSpan={7} className="px-5 py-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {/* Payer */}
+                <div className="bg-white rounded-lg p-3 border border-blue-100">
+                  <p className="text-xs text-gray-400 mb-1 font-medium uppercase tracking-wide">
+                    Payer
+                  </p>
+                  <p className="font-mono text-xs text-gray-700 break-all">
+                    {payment.payer}
+                  </p>
+                </div>
+
+                {/* Merchant Bank */}
+                <div className="bg-white rounded-lg p-3 border border-blue-100">
+                  <p className="text-xs text-gray-400 mb-1 font-medium uppercase tracking-wide">
+                    Merchant Bank
+                  </p>
+                  {payment.merchantInfo.isRegistered ? (
+                    <>
+                      <p className="text-sm font-semibold text-gray-900">
+                        {payment.merchantInfo.accountName}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {payment.merchantInfo.bankName}
+                      </p>
+                      <p className="font-mono text-xs text-gray-600 mt-1 bg-gray-50 px-2 py-1 rounded">
+                        {payment.merchantInfo.accountNumber}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-400">Not Registered</p>
+                  )}
+                </div>
+
+                {/* Amount Breakdown */}
+                <div className="bg-white rounded-lg p-3 border border-blue-100">
+                  <p className="text-xs text-gray-400 mb-1 font-medium uppercase tracking-wide">
+                    Amount
+                  </p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {payment.amount.toFixed(6)} USDC
+                  </p>
+                  {payment.lockedRateNGN ? (
+                    <>
+                      <div className="mt-2 pt-2 border-t border-gray-100">
+                        <p className="text-xs text-gray-400">Locked rate</p>
+                        <p className="text-xs font-medium text-gray-700">
+                          {fmtNGN(payment.lockedRateNGN)} / USDC
+                        </p>
+                      </div>
+                      <div className="mt-1">
+                        <p className="text-xs text-gray-400">NGN total</p>
+                        <p className="text-base font-bold text-green-700">
+                          {fmtNGN(payment.lockedAmountNGN!)}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-400 mt-2">
+                      Rate not yet locked
+                    </p>
+                  )}
+                </div>
+
+                {/* Reference + Time */}
+                <div className="bg-white rounded-lg p-3 border border-blue-100">
+                  <p className="text-xs text-gray-400 mb-1 font-medium uppercase tracking-wide">
+                    Reference
+                  </p>
+                  <p className="font-mono text-xs text-gray-600 break-all bg-gray-50 px-2 py-1 rounded">
+                    {payment.rfce}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-2">
+                    🕐 {payment.timestamp.toLocaleString()}
+                  </p>
+                </div>
+              </div>
+            </td>
+          </tr>
+        )}
+      </>
+    );
+  };
+
+  // ── Guards ─────────────────────────────────────────────────────────────────
   if (!isAdmin) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <h1 className="text-2xl font-bold text-red-600 mb-4">
+          <h1 className="text-2xl font-bold text-red-600 mb-2">
             Access Denied
           </h1>
-          <p className="text-gray-600">You don't have admin privileges.</p>
+          <p className="text-gray-500">You don't have admin privileges.</p>
         </div>
       </div>
     );
@@ -234,613 +455,397 @@ export default function Admin() {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading admin dashboard...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600 font-medium">
+            Loading admin dashboard...
+          </p>
+          <p className="text-gray-400 text-sm mt-1">
+            Fetching on-chain events & payments
+          </p>
         </div>
       </div>
     );
   }
 
+  // ── Main render ────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
       <br />
       <br />
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Admin Dashboard</h1>
-          <p className="text-gray-600 mt-2">
-            Monitor all transactions and merchants
-          </p>
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">
+              Admin Dashboard
+            </h1>
+            <p className="text-gray-400 text-sm mt-1">
+              SettlX · Arbitrum Sepolia
+            </p>
+          </div>
+          <button
+            onClick={fetchAllPayments}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 shadow-sm"
+          >
+            🔄 Refresh
+          </button>
         </div>
 
-        {/* Stats Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex items-center">
-              <div className="p-3 bg-blue-100 rounded-lg">
-                <svg
-                  className="w-6 h-6 text-blue-600"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
-                  />
-                </svg>
-              </div>
-              <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">
-                  Total Transactions
-                </p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {totalTransactions}
-                </p>
-              </div>
+        {/* Stat Cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          {[
+            {
+              label: "Total Transactions",
+              value: totalTransactions,
+              bg: "bg-blue-50",
+              text: "text-blue-700",
+              icon: "📋",
+            },
+            {
+              label: "Total Volume",
+              value: `${totalVolume.toFixed(2)} USDC`,
+              bg: "bg-green-50",
+              text: "text-green-700",
+              icon: "💰",
+            },
+            {
+              label: "Pending",
+              value: pendingTransactions,
+              bg: "bg-yellow-50",
+              text: "text-yellow-700",
+              icon: "⏳",
+            },
+            {
+              label: "Registered Merchants",
+              value: registeredMerchants,
+              bg: "bg-purple-50",
+              text: "text-purple-700",
+              icon: "🏪",
+            },
+          ].map(({ label, value, bg, text, icon }) => (
+            <div
+              key={label}
+              className={`${bg} rounded-xl p-5 shadow-sm border border-white`}
+            >
+              <div className="text-2xl mb-1">{icon}</div>
+              <p className={`text-2xl font-bold ${text}`}>{value}</p>
+              <p className="text-xs text-gray-500 mt-1">{label}</p>
             </div>
-          </div>
-
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex items-center">
-              <div className="p-3 bg-green-100 rounded-lg">
-                <svg
-                  className="w-6 h-6 text-green-600"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"
-                  />
-                </svg>
-              </div>
-              <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">
-                  Total Volume
-                </p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {totalVolume.toFixed(2)} USDC
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex items-center">
-              <div className="p-3 bg-yellow-100 rounded-lg">
-                <svg
-                  className="w-6 h-6 text-yellow-600"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-              </div>
-              <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">Pending</p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {pendingTransactions}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex items-center">
-              <div className="p-3 bg-purple-100 rounded-lg">
-                <svg
-                  className="w-6 h-6 text-purple-600"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
-                  />
-                </svg>
-              </div>
-              <div className="ml-4">
-                <p className="text-sm font-medium text-gray-600">Merchants</p>
-                <p className="text-2xl font-bold text-gray-900">
-                  {registeredMerchants}
-                </p>
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
 
-        {/* Tabs and Search */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+        {/* Tab panel */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+          {/* Tab bar + search */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-            <div className="flex space-x-4">
-              <button
-                onClick={() => setActiveTab("overview")}
-                className={`px-4 py-2 rounded-lg font-medium ${
-                  activeTab === "overview"
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-600 hover:bg-gray-100"
-                }`}
-              >
-                Overview
-              </button>
-              <button
-                onClick={() => setActiveTab("transactions")}
-                className={`px-4 py-2 rounded-lg font-medium ${
-                  activeTab === "transactions"
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-600 hover:bg-gray-100"
-                }`}
-              >
-                All Transactions
-              </button>
-              <button
-                onClick={() => setActiveTab("merchants")}
-                className={`px-4 py-2 rounded-lg font-medium ${
-                  activeTab === "merchants"
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-600 hover:bg-gray-100"
-                }`}
-              >
-                Merchants
-              </button>
+            <div className="flex gap-2 flex-wrap">
+              {[
+                { key: "overview", label: "Overview" },
+                {
+                  key: "transactions",
+                  label: `Transactions (${totalTransactions})`,
+                },
+                { key: "merchants", label: `Merchants (${merchants.length})` },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setActiveTab(key)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeTab === key
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "text-gray-500 hover:bg-gray-100"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
-
-            <div className="w-full sm:w-64">
-              <input
-                type="text"
-                placeholder="Search transactions or merchants..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder-gray-500"
-              />
-            </div>
+            <input
+              type="text"
+              placeholder="Search..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full sm:w-56 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-400"
+            />
           </div>
 
-          {/* Content based on active tab */}
+          {/* ── OVERVIEW ── */}
           {activeTab === "overview" && (
-            <div className="space-y-6">
+            <div className="space-y-8">
+              {/* Status mini-cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  {
+                    label: "Pending",
+                    count: pendingTransactions,
+                    bar: "bg-yellow-400",
+                  },
+                  {
+                    label: "Accepted",
+                    count: acceptedTransactions,
+                    bar: "bg-blue-500",
+                  },
+                  {
+                    label: "Paid",
+                    count: paidTransactions,
+                    bar: "bg-green-500",
+                  },
+                  {
+                    label: "Rejected",
+                    count: allPayments.filter((p) => p.status === "Rejected")
+                      .length,
+                    bar: "bg-red-400",
+                  },
+                ].map(({ label, count, bar }) => (
+                  <div
+                    key={label}
+                    className="bg-gray-50 rounded-lg p-4 border border-gray-100"
+                  >
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm text-gray-600">{label}</span>
+                      <span className="text-xl font-bold text-gray-900">
+                        {count}
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-1.5">
+                      <div
+                        className={`${bar} h-1.5 rounded-full`}
+                        style={{
+                          width: `${totalTransactions ? (count / totalTransactions) * 100 : 0}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {totalTransactions
+                        ? ((count / totalTransactions) * 100).toFixed(0)
+                        : 0}
+                      % of total
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Recent transactions */}
               <div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                  Recent Transactions
-                </h3>
-                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                <div className="flex items-center gap-2 mb-3">
+                  <h3 className="text-base font-semibold text-gray-900">
+                    Recent Transactions
+                  </h3>
+                  <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">
+                    Click a row to expand
+                  </span>
+                </div>
+                <div className="border border-gray-200 rounded-lg overflow-hidden overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead className="bg-gray-50 border-b text-gray-600">
+                    <thead className="bg-gray-50 border-b text-xs text-gray-500 uppercase tracking-wide">
                       <tr>
-                        <th className="text-left p-4 font-medium">
-                          Payment ID
-                        </th>
-                        <th className="text-left p-4 font-medium">Payer</th>
-                        <th className="text-left p-4 font-medium">Merchant</th>
-                        <th className="text-right p-4 font-medium">
-                          USDC Amount
-                        </th>
-                        <th className="text-right p-4 font-medium">
-                          Locked Amount (NGN)
-                        </th>
-                        <th className="text-right p-4 font-medium">Status</th>
-                        <th className="text-right p-4 font-medium">Date</th>
-                        <th className="text-right p-4 font-medium">Actions</th>
+                        <th className="text-left p-3">ID</th>
+                        <th className="text-left p-3">Payer</th>
+                        <th className="text-left p-3">Merchant</th>
+                        <th className="text-right p-3">Amount</th>
+                        <th className="text-right p-3">Status</th>
+                        <th className="text-right p-3">Date</th>
+                        <th className="text-right p-3">Action</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredPayments.slice(0, 10).map((payment) => (
-                        <tr
-                          key={payment.id}
-                          className="border-b hover:bg-gray-50"
-                        >
-                          <td className="p-4 font-medium text-gray-900">
-                            #{payment.id}
-                          </td>
-                          <td className="p-4">
-                            <div className="text-gray-600 font-mono text-xs">
-                              {payment.payer.slice(0, 8)}...
-                              {payment.payer.slice(-6)}
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            <div className="text-gray-600 font-mono text-xs">
-                              {payment.merchant.slice(0, 8)}...
-                              {payment.merchant.slice(-6)}
-                            </div>
-                          </td>
-                          <td className="text-right p-4 font-medium text-gray-900">
-                            {payment.amount.toFixed(2)} USDC
-                          </td>
-                          <td className="text-right p-4 font-medium text-gray-900">
-                            {payment.lockedAmountNGN
-                              ? payment.lockedAmountNGN.toFixed(2) + " NGN"
-                              : "Not locked"}
-                          </td>
-                          <td className="text-right p-4">
-                            <span
-                              className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
-                                payment.status === "Pending"
-                                  ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
-                                  : payment.status === "Accepted"
-                                    ? "bg-blue-100 text-blue-800 border border-blue-200"
-                                    : payment.status === "Paid"
-                                      ? "bg-green-100 text-green-800 border border-green-200"
-                                      : "bg-red-100 text-red-800 border border-red-200"
-                              }`}
-                            >
-                              {payment.status}
-                            </span>
-                          </td>
-                          <td className="text-right p-4 text-gray-500 text-xs">
-                            {payment.timestamp.toLocaleDateString()}
-                          </td>
-                          <td className="text-right p-4">
-                            {payment.status === "Accepted" && (
-                              <button
-                                onClick={() => markAsPaid(payment.id)}
-                                disabled={markingAsPaid === payment.id}
-                                className="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 transition-colors font-medium disabled:opacity-50"
-                              >
-                                {markingAsPaid === payment.id
-                                  ? "Marking..."
-                                  : "Mark as Paid"}
-                              </button>
-                            )}
-                            {payment.status === "Paid" && (
-                              <span className="text-green-600 text-sm">
-                                ✓ Paid
-                              </span>
-                            )}
+                      {filteredPayments.length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={7}
+                            className="text-center py-10 text-gray-400"
+                          >
+                            No transactions found
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        filteredPayments
+                          .slice(0, 10)
+                          .map((p) => <PaymentRow key={p.id} payment={p} />)
+                      )}
                     </tbody>
                   </table>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                    Top Merchants
-                  </h3>
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    {merchants.slice(0, 5).map((merchant, index) => (
-                      <div
-                        key={merchant.address}
-                        className="flex items-center justify-between py-3 border-b border-gray-200 last:border-b-0"
-                      >
-                        <div className="flex items-center">
-                          <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-semibold text-sm">
-                            {index + 1}
-                          </div>
-                          <div className="ml-3">
-                            <div className="text-sm font-medium text-gray-900">
-                              {merchant.accountName !== "N/A"
-                                ? merchant.accountName
-                                : "Unregistered"}
-                            </div>
-                            <div className="text-xs text-gray-500 font-mono">
-                              Acc: {merchant.accountNumber}
-                            </div>
-                            <div className="text-xs text-gray-500 font-mono">
-                              {merchant.address.slice(0, 8)}...
-                              {merchant.address.slice(-6)}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-sm font-semibold text-gray-900">
-                            {merchant.totalRevenue.toFixed(2)} USDC
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {merchant.totalPayments} payments
-                          </div>
-                        </div>
+              {/* Top merchants */}
+              <div>
+                <h3 className="text-base font-semibold text-gray-900 mb-3">
+                  Top Merchants
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {merchants.slice(0, 6).map((m, i) => (
+                    <div
+                      key={m.address}
+                      className="bg-gray-50 border border-gray-100 rounded-lg p-4 flex items-start gap-3"
+                    >
+                      <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold text-sm shrink-0">
+                        {i + 1}
                       </div>
-                    ))}
-                  </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-gray-900 truncate">
+                          {m.isRegistered ? m.accountName : "Unregistered"}
+                        </p>
+                        {m.isRegistered && (
+                          <>
+                            <p className="text-xs text-gray-500">
+                              {m.bankName}
+                            </p>
+                            <p className="font-mono text-xs text-gray-400">
+                              {m.accountNumber}
+                            </p>
+                          </>
+                        )}
+                        <p className="font-mono text-xs text-gray-300 mt-0.5 truncate">
+                          {m.address}
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-bold text-gray-900">
+                          {m.totalRevenue.toFixed(2)}
+                        </p>
+                        <p className="text-xs text-gray-400">USDC</p>
+                        {m.totalNGN > 0 && (
+                          <p className="text-xs text-green-600 font-medium">
+                            ₦
+                            {m.totalNGN.toLocaleString(undefined, {
+                              maximumFractionDigits: 0,
+                            })}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
+              </div>
+            </div>
+          )}
 
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                    Transaction Status
-                  </h3>
-                  <div className="bg-gray-50 rounded-lg p-6">
-                    <div className="space-y-4">
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-600">Completed</span>
-                        <div className="flex items-center">
-                          <span className="font-semibold text-gray-900 mr-2">
-                            {paidTransactions}
-                          </span>
-                          <div className="w-20 bg-gray-200 rounded-full h-2">
-                            <div
-                              className="bg-green-600 h-2 rounded-full"
-                              style={{
-                                width: `${
-                                  (paidTransactions / totalTransactions) * 100
-                                }%`,
-                              }}
-                            ></div>
-                          </div>
+          {/* ── TRANSACTIONS ── */}
+          {activeTab === "transactions" && (
+            <div>
+              <p className="text-xs text-gray-400 mb-3">
+                Click any row to expand full payment details
+              </p>
+              <div className="border border-gray-200 rounded-lg overflow-hidden overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b text-xs text-gray-500 uppercase tracking-wide">
+                    <tr>
+                      <th className="text-left p-3">ID</th>
+                      <th className="text-left p-3">Payer</th>
+                      <th className="text-left p-3">Merchant</th>
+                      <th className="text-right p-3">Amount / NGN</th>
+                      <th className="text-right p-3">Status</th>
+                      <th className="text-right p-3">Date</th>
+                      <th className="text-right p-3">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredPayments.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="text-center py-10 text-gray-400"
+                        >
+                          No transactions found
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredPayments.map((p) => (
+                        <PaymentRow key={p.id} payment={p} />
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* ── MERCHANTS ── */}
+          {activeTab === "merchants" && (
+            <div>
+              {filteredMerchants.length === 0 ? (
+                <p className="text-center py-10 text-gray-400">
+                  No merchants found
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {filteredMerchants.map((m) => (
+                    <div
+                      key={m.address}
+                      className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow"
+                    >
+                      {/* Card header */}
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex-1 min-w-0">
+                          {m.isRegistered ? (
+                            <>
+                              <h4 className="font-semibold text-gray-900 truncate">
+                                {m.accountName}
+                              </h4>
+                              <p className="text-xs text-gray-500">
+                                {m.bankName}
+                              </p>
+                              <p className="font-mono text-xs text-gray-400 mt-0.5 bg-gray-50 inline-block px-2 py-0.5 rounded">
+                                {m.accountNumber}
+                              </p>
+                            </>
+                          ) : (
+                            <h4 className="font-semibold text-gray-400">
+                              Unregistered
+                            </h4>
+                          )}
                         </div>
+                        <span
+                          className={`ml-2 px-2 py-0.5 rounded-full text-xs font-semibold shrink-0 ${m.isRegistered ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}
+                        >
+                          {m.isRegistered ? "✓ Registered" : "Unregistered"}
+                        </span>
                       </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-600">Accepted</span>
-                        <div className="flex items-center">
-                          <span className="font-semibold text-gray-900 mr-2">
-                            {acceptedTransactions}
-                          </span>
-                          <div className="w-20 bg-gray-200 rounded-full h-2">
-                            <div
-                              className="bg-blue-600 h-2 rounded-full"
-                              style={{
-                                width: `${
-                                  (acceptedTransactions / totalTransactions) *
-                                  100
-                                }%`,
-                              }}
-                            ></div>
-                          </div>
+
+                      {/* Wallet address */}
+                      <div className="bg-gray-50 rounded-lg px-3 py-2 mb-3">
+                        <p className="text-xs text-gray-400 mb-0.5">Wallet</p>
+                        <p className="font-mono text-xs text-gray-600 break-all">
+                          {m.address}
+                        </p>
+                      </div>
+
+                      {/* Stats grid */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-blue-50 rounded-lg p-2.5 text-center">
+                          <p className="text-xl font-bold text-blue-700">
+                            {m.totalPayments}
+                          </p>
+                          <p className="text-xs text-blue-500">
+                            Total Payments
+                          </p>
                         </div>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-600">Pending</span>
-                        <div className="flex items-center">
-                          <span className="font-semibold text-gray-900 mr-2">
-                            {pendingTransactions}
-                          </span>
-                          <div className="w-20 bg-gray-200 rounded-full h-2">
-                            <div
-                              className="bg-yellow-600 h-2 rounded-full"
-                              style={{
-                                width: `${
-                                  (pendingTransactions / totalTransactions) *
-                                  100
-                                }%`,
-                              }}
-                            ></div>
-                          </div>
+                        <div className="bg-yellow-50 rounded-lg p-2.5 text-center">
+                          <p className="text-xl font-bold text-yellow-700">
+                            {m.pendingPayments}
+                          </p>
+                          <p className="text-xs text-yellow-500">Pending</p>
                         </div>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-600">Rejected</span>
-                        <div className="flex items-center">
-                          <span className="font-semibold text-gray-900 mr-2">
-                            {
-                              allPayments.filter((p) => p.status === "Rejected")
-                                .length
-                            }
-                          </span>
-                          <div className="w-20 bg-gray-200 rounded-full h-2">
-                            <div
-                              className="bg-red-600 h-2 rounded-full"
-                              style={{
-                                width: `${
-                                  (allPayments.filter(
-                                    (p) => p.status === "Rejected",
-                                  ).length /
-                                    totalTransactions) *
-                                  100
-                                }%`,
-                              }}
-                            ></div>
-                          </div>
+                        <div className="bg-green-50 rounded-lg p-2.5 text-center">
+                          <p className="text-sm font-bold text-green-700">
+                            {m.totalRevenue.toFixed(2)}
+                          </p>
+                          <p className="text-xs text-green-500">USDC Revenue</p>
+                        </div>
+                        <div className="bg-purple-50 rounded-lg p-2.5 text-center">
+                          <p className="text-sm font-bold text-purple-700">
+                            {m.totalNGN > 0
+                              ? `₦${m.totalNGN.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                              : "—"}
+                          </p>
+                          <p className="text-xs text-purple-500">NGN Settled</p>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "transactions" && (
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                All Transactions
-              </h3>
-              <div className="border border-gray-200 rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 border-b text-gray-600">
-                    <tr>
-                      <th className="text-left p-4 font-medium">Payment ID</th>
-                      <th className="text-left p-4 font-medium">Payer</th>
-                      <th className="text-left p-4 font-medium">Merchant</th>
-                      <th className="text-left p-4 font-medium">Reference</th>
-                      <th className="text-right p-4 font-medium">
-                        USDC Amount
-                      </th>
-                      <th className="text-right p-4 font-medium">
-                        Locked Amount (NGN)
-                      </th>
-                      <th className="text-right p-4 font-medium">Status</th>
-                      <th className="text-right p-4 font-medium">Date</th>
-                      <th className="text-right p-4 font-medium">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredPayments.map((payment) => (
-                      <tr
-                        key={payment.id}
-                        className="border-b hover:bg-gray-50"
-                      >
-                        <td className="p-4 font-medium text-gray-900">
-                          #{payment.id}
-                        </td>
-                        <td className="p-4">
-                          <div className="text-gray-600 font-mono text-xs">
-                            {payment.payer.slice(0, 8)}...
-                            {payment.payer.slice(-6)}
-                          </div>
-                        </td>
-                        <td className="p-4">
-                          <div className="text-gray-600 font-mono text-xs">
-                            {payment.merchant.slice(0, 8)}...
-                            {payment.merchant.slice(-6)}
-                          </div>
-                        </td>
-                        <td className="p-4 text-gray-500 text-xs">
-                          {payment.rfce}
-                        </td>
-                        <td className="text-right p-4 font-medium text-gray-900">
-                          {payment.amount.toFixed(2)} USDC
-                        </td>
-                        <td className="text-right p-4 font-medium text-gray-900">
-                          {payment.lockedAmountNGN
-                            ? payment.lockedAmountNGN.toFixed(2) + " NGN"
-                            : "Not locked"}
-                        </td>
-                        <td className="text-right p-4">
-                          <span
-                            className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
-                              payment.status === "Pending"
-                                ? "bg-yellow-100 text-yellow-800 border border-yellow-200"
-                                : payment.status === "Accepted"
-                                  ? "bg-blue-100 text-blue-800 border border-blue-200"
-                                  : payment.status === "Paid"
-                                    ? "bg-green-100 text-green-800 border border-green-200"
-                                    : "bg-red-100 text-red-800 border border-red-200"
-                            }`}
-                          >
-                            {payment.status}
-                          </span>
-                        </td>
-                        <td className="text-right p-4 text-gray-500 text-xs">
-                          {payment.timestamp.toLocaleDateString()}
-                        </td>
-                        <td className="text-right p-4">
-                          {payment.status === "Accepted" && (
-                            <button
-                              onClick={() => markAsPaid(payment.id)}
-                              disabled={markingAsPaid === payment.id}
-                              className="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 transition-colors font-medium disabled:opacity-50"
-                            >
-                              {markingAsPaid === payment.id
-                                ? "Marking..."
-                                : "Mark as Paid"}
-                            </button>
-                          )}
-                          {payment.status === "Paid" && (
-                            <span className="text-green-600 text-sm">
-                              ✓ Paid
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "merchants" && (
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                All Merchants
-              </h3>
-              <div className="border border-gray-200 rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 border-b text-gray-600">
-                    <tr>
-                      <th className="text-left p-4 font-medium">
-                        Merchant Address
-                      </th>
-                      <th className="text-left p-4 font-medium">
-                        Bank Details
-                      </th>
-                      <th className="text-left p-4 font-medium">
-                        Account Number
-                      </th>
-                      <th className="text-right p-4 font-medium">
-                        Total Payments
-                      </th>
-                      <th className="text-right p-4 font-medium">
-                        Total Revenue
-                      </th>
-                      <th className="text-right p-4 font-medium">Pending</th>
-                      <th className="text-right p-4 font-medium">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredMerchants.map((merchant) => (
-                      <tr
-                        key={merchant.address}
-                        className="border-b hover:bg-gray-50"
-                      >
-                        <td className="p-4">
-                          <div className="font-medium text-gray-900 font-mono text-xs">
-                            {merchant.address}
-                          </div>
-                        </td>
-                        <td className="p-4">
-                          {merchant.isRegistered ? (
-                            <div>
-                              <div className="text-sm font-medium text-gray-900">
-                                {merchant.accountName}
-                              </div>
-                              <div className="text-xs text-gray-500">
-                                {merchant.bankName}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-gray-400 text-sm">
-                              Not Registered
-                            </span>
-                          )}
-                        </td>
-                        <td className="p-4">
-                          {merchant.isRegistered ? (
-                            <div className="text-sm font-medium text-gray-900 font-mono">
-                              {merchant.accountNumber}
-                            </div>
-                          ) : (
-                            <span className="text-gray-400 text-sm">N/A</span>
-                          )}
-                        </td>
-                        <td className="text-right p-4 font-medium text-gray-900">
-                          {merchant.totalPayments}
-                        </td>
-                        <td className="text-right p-4 font-medium text-gray-900">
-                          {merchant.totalRevenue.toFixed(2)} USDC
-                        </td>
-                        <td className="text-right p-4">
-                          <span className="text-yellow-600 font-medium">
-                            {merchant.pendingPayments}
-                          </span>
-                        </td>
-                        <td className="text-right p-4">
-                          <span
-                            className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
-                              merchant.isRegistered
-                                ? "bg-green-100 text-green-800 border border-green-200"
-                                : "bg-gray-100 text-gray-800 border border-gray-200"
-                            }`}
-                          >
-                            {merchant.isRegistered
-                              ? "Registered"
-                              : "Unregistered"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              )}
             </div>
           )}
         </div>
