@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAccount, useWriteContract, useReadContract } from "wagmi";
 import { parseUnits, erc20Abi, http } from "viem";
-import contractABI from "../contracts/SettlX.json";
+import contractABI from "../contracts/settlX.json";
 import toast from "react-hot-toast";
 import { readContract } from "wagmi/actions";
 import { createConfig } from "@privy-io/wagmi";

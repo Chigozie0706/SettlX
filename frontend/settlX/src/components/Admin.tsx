@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAccount, useWriteContract } from "wagmi";
-import contractABI from "../contracts/SettlX.json";
+import contractABI from "../contracts/settlX.json";
 import { readContract } from "wagmi/actions";
 import { arbitrumSepolia } from "viem/chains";
 import { createConfig } from "@privy-io/wagmi";

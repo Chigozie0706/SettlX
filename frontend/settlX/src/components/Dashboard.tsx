@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAccount, useReadContract, useWriteContract } from "wagmi";
 import { http } from "viem";
-import contractABI from "../contracts/SettlX.json";
+import contractABI from "../contracts/settlX.json";
 import { readContract, waitForTransactionReceipt } from "wagmi/actions";
 import { arbitrumSepolia } from "viem/chains";
 import { createConfig } from "@privy-io/wagmi";
