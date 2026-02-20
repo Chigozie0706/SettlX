@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAccount, useWriteContract, useReadContract } from "wagmi";
 import { parseUnits, erc20Abi, http } from "viem";
-import contractABI from "../contracts/SettlX1.json";
+import contractABI from "../contracts/SettlX.json";
 import toast from "react-hot-toast";
 import { readContract } from "wagmi/actions";
 import { createConfig } from "@privy-io/wagmi";
@@ -20,7 +20,7 @@ const config = createConfig({
 });
 
 const USDC_ADDRESS = "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d";
-const CONTRACT_ADDRESS = "0xc7de1f51613c80557c65b7ef07718952158a445e";
+const CONTRACT_ADDRESS = "0x4855dcefa1a1ecf8b2fbd7eae38b6f73a90f48d1";
 const USDC_USD_PRICE_FEED = "0x50834F3163758fcC1Df9973b6e91f0F0F0434aD3";
 
 export default function Transact() {
@@ -226,6 +226,8 @@ export default function Transact() {
         abi: erc20Abi,
         functionName: "approve",
         args: [CONTRACT_ADDRESS, amountInWei],
+        maxFeePerGas: BigInt(25_000_000),
+        maxPriorityFeePerGas: BigInt(1_000_000),
       });
       toast.success("✅ USDC approved!", { id: toastId });
       return true;
@@ -249,6 +251,8 @@ export default function Transact() {
         abi: contractABI,
         functionName: "payMerchant",
         args: [merchantAddr, amountInWei, reference],
+        maxFeePerGas: BigInt(25_000_000),
+        maxPriorityFeePerGas: BigInt(1_000_000),
       });
       toast.success("✅ Payment created!", { id: toastId });
       setTimeout(() => refetchPayments(), 2000);

@@ -255,7 +255,6 @@ export default function HomePage() {
           {[
             { end: 100, suffix: "%", label: "FX Risk Eliminated" },
             { end: 4, suffix: " steps", label: "End-to-End Flow" },
-            { end: 0, suffix: " middlemen", label: "No Intermediaries" },
             { end: 24, suffix: "/7", label: "Always On-Chain" },
           ].map(({ end, suffix, label }) => (
             <div key={label} className="text-center">
@@ -571,7 +570,6 @@ export default function HomePage() {
           </div>
           <p className="text-gray-600 text-xs">
             Built on <span className="text-fuchsia-400">Arbitrum</span> ·
-            Hackathon 2026
           </p>
         </div>
       </footer>
