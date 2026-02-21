@@ -4,7 +4,7 @@
 
 SettlX is a Web3 payment settlement platform that lets global merchants accept stablecoin (USDC) payments and receive guaranteed local-currency (NGN) settlements at a **locked exchange rate** — eliminating FX volatility risk entirely. Smart contracts written in **Rust using Arbitrum Stylus** handle escrow, rate locking, and settlement on-chain.
 
----
+## [Demo Link](https://settl-x.vercel.app/)
 
 ## Table of Contents
 
@@ -250,6 +250,16 @@ The frontend is built with **Next.js 16**, **Privy** (wallet auth), **Wagmi v2**
 ```bash
 cd frontend
 cd settlX
+```
+
+**You set up your enviroment variables**
+
+```bash
+NEXT_PUBLIC_PRIVY_APP_ID = YOUR_NEXT_PUBLIC_PRIVY_APP_ID
+NEXT_PUBLIC_PRIVY_AUTH_URL = YOUR_NEXT_PUBLIC_PRIVY_AUTH_URL
+```
+
+```bash
 pnpm install
 pnpm run dev
 ```
